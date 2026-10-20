@@ -19,10 +19,12 @@ import io.dataease.initSql.Version;
 import io.dataease.utils.LogUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.i18n.LocaleContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.File;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -67,9 +69,15 @@ public class EeDataInit implements EeSqlBlock {
     @Override
     @Transactional
     public void execute() {
-        initOrg();
-        initAdmin();
-        registerExistingResources();
+        Locale origin = LocaleContextHolder.getLocale();
+        LocaleContextHolder.setLocale(Locale.SIMPLIFIED_CHINESE);
+        try {
+            initOrg();
+            initAdmin();
+            registerExistingResources();
+        } finally {
+            LocaleContextHolder.setLocale(origin);
+        }
     }
 
     private void initOrg() {
