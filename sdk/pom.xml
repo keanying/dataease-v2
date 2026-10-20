@@ -13,6 +13,7 @@
     <artifactId>sdk</artifactId>
 
     <modules>
+        <module>foundation</module>
         <module>common</module>
         <module>api</module>
         <module>extensions</module>
