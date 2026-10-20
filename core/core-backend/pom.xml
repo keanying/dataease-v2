@@ -161,6 +161,16 @@
             <build>
                 <plugins>
                     <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <!-- 自研企业版（io.dataease.ee）提供登录、用户、组织实现，排除社区版替补实现 -->
+                                <exclude>io/dataease/substitute/**</exclude>
+                            </excludes>
+                        </configuration>
+                    </plugin>
+                    <plugin>
                         <artifactId>maven-clean-plugin</artifactId>
                         <configuration>
                             <filesets>
@@ -231,6 +241,12 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-compiler-plugin</artifactId>
+                        <configuration>
+                            <excludes>
+                                <!-- 桌面版为单用户模式，不包含自研企业版 -->
+                                <exclude>io/dataease/ee/**</exclude>
+                            </excludes>
+                        </configuration>
                     </plugin>
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
