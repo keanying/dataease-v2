@@ -44,6 +44,11 @@ public class PerUser {
     @Column(name = "email")
     private String email;
 
+    @Size(max = 16)
+    @Comment("手机号国际区号")
+    @Column(name = "phone_prefix", length = 16)
+    private String phonePrefix;
+
     @Size(max = 64)
     @Comment("手机号")
     @Column(name = "phone", length = 64)
@@ -57,7 +62,7 @@ public class PerUser {
 
     @NotNull
     @ColumnDefault("0")
-    @Comment("用户来源：0 本地，1 LDAP，2 OIDC，3 CAS，4 企业微信，5 钉钉，6 飞书，7 国际飞书，8 OAuth2，9 SAML")
+    @Comment("用户来源：0 本地，1 LDAP，2 OIDC，3 CAS，4 飞书，5 钉钉，6 企业微信，7 国际飞书，9 OAuth2，10 SAML2")
     @Column(name = "origin", nullable = false)
     private Integer origin = 0;
 
@@ -104,6 +109,12 @@ public class PerUser {
     @Comment("是否已绑定 MFA")
     @Column(name = "mfa_bound", nullable = false)
     private Boolean mfaBound = false;
+
+    @NotNull
+    @ColumnDefault("false")
+    @Comment("用户是否开启 MFA")
+    @Column(name = "mfa_enable", nullable = false)
+    private Boolean mfaEnable = false;
 
     @Comment("最近一次切换的组织ID")
     @Column(name = "last_oid")

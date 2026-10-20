@@ -82,17 +82,17 @@ public final class EeConstants {
 
     public static final int ORIGIN_CAS = 3;
 
-    public static final int ORIGIN_WECOM = 4;
+    public static final int ORIGIN_LARK = 4;
 
     public static final int ORIGIN_DINGTALK = 5;
 
-    public static final int ORIGIN_LARK = 6;
+    public static final int ORIGIN_WECOM = 6;
 
     public static final int ORIGIN_LARKSUITE = 7;
 
-    public static final int ORIGIN_OAUTH2 = 8;
+    public static final int ORIGIN_OAUTH2 = 9;
 
-    public static final int ORIGIN_SAML = 9;
+    public static final int ORIGIN_SAML = 10;
 
     public static final String DEFAULT_PWD = "DataEase@123456";
 

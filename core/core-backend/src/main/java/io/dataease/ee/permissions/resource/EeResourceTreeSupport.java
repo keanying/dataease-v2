@@ -44,7 +44,7 @@ public class EeResourceTreeSupport {
         }
         Set<Long> orgResources = busiResourceManage.idsByOrg(rtId, oid);
         Map<Long, Perm> perms = permissionManage.effective(uid, oid, rtId);
-        int rootWeight = permissionManage.canManageRoot(uid, oid) ? EeConstants.WEIGHT_MANAGE : EeConstants.WEIGHT_READ;
+        int rootWeight = permissionManage.canManageRoot(uid, oid, rtId) ? EeConstants.WEIGHT_MANAGE : EeConstants.WEIGHT_READ;
         List<BusiNodeVO> result = new ArrayList<>();
         for (BusiNodeVO node : roots) {
             BusiNodeVO kept = filterNode(node, orgResources, perms, rootWeight);

@@ -38,9 +38,11 @@ public class UserTokenAuthenticator implements EeRequestAuthenticator {
     public void authenticate(HttpServletRequest request) {
         Long[] identity = tokenManage.verify(request.getHeader(AuthConstant.TOKEN_KEY));
         Long uid = identity[0];
-        Long oid = identity[1];
-        if (oid == null || !orgManage.isMember(uid, oid)) {
-            oid = orgManage.resolveCurrentOid(uid);
+        Long tokenOid = identity[1];
+        Long oid = orgManage.resolveCurrentOid(uid);
+        if (!java.util.Objects.equals(tokenOid, oid)) {
+            // 所属组织已变更，要求重新登录
+            DEException.throwException(ResultCode.USER_NOT_LOGGED_IN.code(), "permission has been changed");
         }
         V3UserUtil.setContext(uid, oid);
 

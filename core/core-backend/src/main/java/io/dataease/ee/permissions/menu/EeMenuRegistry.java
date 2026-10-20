@@ -33,6 +33,16 @@ public final class EeMenuRegistry {
      */
     public static final Set<Long> SYS_ADMIN_ONLY = Set.of(SYS_SETTING);
 
+    /**
+     * 内置普通用户角色不可见的菜单（与前端权限配置页约定一致）
+     */
+    public static final Set<Long> STAFF_RESTRICTED = Set.of(13L, 62L, 63L);
+
+    /**
+     * 不属于任何组织的用户也可见的个人菜单
+     */
+    public static final Set<Long> PERSONAL = Set.of(1L, 80L, 81L);
+
     public static List<CoreMenu> menus() {
         List<CoreMenu> menus = new ArrayList<>();
         // 组织管理中心
@@ -43,15 +53,15 @@ public final class EeMenuRegistry {
         menus.add(menu(22L, 21L, 2, "summary", "/menu/system/sync/summary/index", 1, null, "/summary", false, true, true));
         menus.add(menu(23L, 21L, 2, "ds", "/menu/system/sync/ds/index", 2, null, "/ds", false, true, true));
         menus.add(menu(24L, 21L, 2, "task", "/menu/system/sync/task/index", 3, null, "/task", false, true, true));
-        menus.add(menu(40L, SYSTEM, 2, "report", "/menu/system/report/index", 4, "report", "/report", false, true, true));
-        menus.add(menu(41L, SYSTEM, 2, "threshold", "/menu/system/threshold/index", 5, "threshold", "/threshold", false, true, true));
-        menus.add(menu(42L, SYSTEM, 2, "webhook", "/menu/system/webhook/index", 6, "webhook", "/webhook", false, true, true));
-        menus.add(menu(43L, SYSTEM, 2, "association", "/menu/system/association/index", 7, "association", "/association", false, true, true));
+        menus.add(menu(13L, SYSTEM, 2, "report", "/menu/system/report/index", 4, "report", "/report", false, true, true));
+        menus.add(menu(62L, SYSTEM, 2, "threshold", "/menu/system/threshold/index", 5, "threshold", "/threshold", false, true, true));
+        menus.add(menu(63L, SYSTEM, 2, "webhook", "/menu/system/webhook/index", 6, "webhook", "/webhook", false, true, true));
+        menus.add(menu(65L, SYSTEM, 2, "association", "/menu/system/association/index", 7, "association", "/association", false, true, true));
 
         // 系统设置
         menus.add(menu(SYS_USER, SYS_SETTING, 2, "sysuser", "/menu/system/sysuser/index", 1, "sysuser", "/sysuser", false, true, false));
         menus.add(menu(9L, SYS_SETTING, 2, "org", "/menu/system/org/index", 2, "org", "/org", false, true, false));
-        menus.add(menu(13L, SYS_SETTING, 2, "sysauth", "/menu/system/auth/index", 3, "auth", "/auth", false, true, false));
+        menus.add(menu(14L, SYS_SETTING, 2, "sysauth", "/menu/system/auth/index", 3, "auth", "/auth", false, true, false));
         menus.add(menu(18L, SYS_SETTING, 2, "sysVariable", "/menu/setting/variable/index", 5, "variable", "/sysVariable", false, true, false));
         menus.add(menu(20L, SYS_SETTING, 2, "watermark", "/menu/system/watermark/index", 6, "watermark", "/watermark", false, true, false));
         menus.add(menu(26L, SYS_SETTING, 2, "appearance", "/menu/setting/appearance/index", 7, "appearance", "/appearance", false, true, false));

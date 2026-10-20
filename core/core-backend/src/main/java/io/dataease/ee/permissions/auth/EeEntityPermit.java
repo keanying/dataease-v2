@@ -2,7 +2,9 @@ package io.dataease.ee.permissions.auth;
 
 import io.dataease.ee.permissions.dao.entity.PerRole;
 import io.dataease.ee.permissions.dao.repo.PerRoleRepository;
+import io.dataease.ee.permissions.menu.EeMenuManage;
 import io.dataease.ee.permissions.org.EeOrgManage;
+import org.springframework.context.annotation.Lazy;
 import io.dataease.permission.util.V3UserUtil;
 import org.springframework.stereotype.Component;
 
@@ -20,14 +22,23 @@ public class EeEntityPermit {
 
     private final PerRoleRepository perRoleRepository;
 
-    public EeEntityPermit(EePermissionManage permissionManage, EeOrgManage orgManage, PerRoleRepository perRoleRepository) {
+    private final EeMenuManage menuManage;
+
+    /**
+     * 成员管理菜单
+     */
+    private static final Long MEMBER_MENU = 8L;
+
+    public EeEntityPermit(EePermissionManage permissionManage, EeOrgManage orgManage, PerRoleRepository perRoleRepository,
+                          @Lazy EeMenuManage menuManage) {
         this.permissionManage = permissionManage;
         this.orgManage = orgManage;
         this.perRoleRepository = perRoleRepository;
+        this.menuManage = menuManage;
     }
 
     /**
-     * 当前身份是否可以管理目标用户：系统管理员；或目标用户属于当前组织且当前用户为组织管理员
+     * 当前身份是否可以管理目标用户：系统管理员；或目标用户属于当前组织且当前用户可访问成员管理
      */
     public boolean canManageUser(Long targetUid) {
         Long uid = V3UserUtil.getUid();
@@ -38,11 +49,11 @@ public class EeEntityPermit {
             return false;
         }
         Long oid = V3UserUtil.getOid();
-        return permissionManage.isOrgAdmin(uid, oid) && orgManage.isMember(targetUid, oid);
+        return orgManage.isMember(targetUid, oid) && menuManage.canAccess(MEMBER_MENU);
     }
 
     /**
-     * 当前身份是否可以管理角色：系统管理员；或角色属于当前组织且当前用户为组织管理员
+     * 当前身份是否可以管理角色：系统管理员；或角色属于当前组织且当前用户可访问成员管理
      */
     public boolean canManageRole(Long rid) {
         Long uid = V3UserUtil.getUid();
@@ -53,7 +64,7 @@ public class EeEntityPermit {
         if (role == null) {
             return false;
         }
-        return role.getOid().equals(V3UserUtil.getOid()) && permissionManage.isOrgAdmin(uid, role.getOid());
+        return role.getOid().equals(V3UserUtil.getOid()) && menuManage.canAccess(MEMBER_MENU);
     }
 
     /**

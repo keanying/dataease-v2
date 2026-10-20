@@ -1,11 +1,10 @@
 package io.dataease.ee.permissions.org;
 
 import com.querydsl.jpa.impl.JPAQueryFactory;
-import io.dataease.ee.common.EeConstants;
 import io.dataease.ee.permissions.dao.entity.PerOrg;
 import io.dataease.ee.permissions.dao.entity.PerUser;
 import io.dataease.ee.permissions.dao.entity.QPerOrg;
-import io.dataease.ee.permissions.dao.entity.QPerUserRole;
+import io.dataease.ee.permissions.dao.entity.QPerUser;
 import io.dataease.ee.permissions.dao.repo.PerOrgRepository;
 import io.dataease.ee.permissions.dao.repo.PerUserRepository;
 import org.apache.commons.lang3.StringUtils;
@@ -40,43 +39,33 @@ public class EeOrgManage {
     }
 
     /**
-     * 用户是否属于组织（拥有该组织下的角色）
+     * 用户是否属于组织。每个用户至多属于一个组织（per_user.default_oid）
      */
     public boolean isMember(Long uid, Long oid) {
         if (uid == null || oid == null) {
             return false;
         }
-        QPerUserRole ur = QPerUserRole.perUserRole;
-        return queryFactory.selectOne().from(ur).where(ur.uid.eq(uid), ur.oid.eq(oid)).fetchFirst() != null;
+        PerUser user = perUserRepository.findById(uid).orElse(null);
+        return user != null && oid.equals(user.getDefaultOid());
     }
 
     /**
-     * 用户所属组织ID列表
-     */
-    public List<Long> memberOrgIds(Long uid) {
-        QPerUserRole ur = QPerUserRole.perUserRole;
-        return queryFactory.select(ur.oid).distinct().from(ur).where(ur.uid.eq(uid)).fetch();
-    }
-
-    /**
-     * 解析用户当前组织：最近切换的组织 > 默认组织 > 任一所属组织
+     * 用户所属组织，无组织时为 null
      */
     public Long resolveCurrentOid(Long uid) {
-        PerUser user = perUserRepository.findById(uid).orElse(null);
-        if (user == null) {
+        PerUser user = uid == null ? null : perUserRepository.findById(uid).orElse(null);
+        if (user == null || user.getDefaultOid() == null || !exists(user.getDefaultOid())) {
             return null;
         }
-        if (isMember(uid, user.getLastOid())) {
-            return user.getLastOid();
-        }
-        if (isMember(uid, user.getDefaultOid())) {
-            return user.getDefaultOid();
-        }
-        List<Long> oids = memberOrgIds(uid);
-        if (oids.isEmpty()) {
-            return null;
-        }
-        return oids.contains(EeConstants.ROOT_ORG_ID) ? EeConstants.ROOT_ORG_ID : oids.get(0);
+        return user.getDefaultOid();
+    }
+
+    /**
+     * 组织成员ID
+     */
+    public List<Long> memberIds(Long oid) {
+        QPerUser u = QPerUser.perUser;
+        return queryFactory.select(u.id).from(u).where(u.defaultOid.eq(oid)).fetch();
     }
 
     /**
