@@ -59,10 +59,21 @@ public class EeEmailChannel implements EeNotifyChannel {
         ClassLoader origin = Thread.currentThread().getContextClassLoader();
         // jakarta.mail 通过上下文类加载器查找 provider，在 Quartz 等线程中显式指定
         Thread.currentThread().setContextClassLoader(EeEmailChannel.class.getClassLoader());
+        // 逐个收件人发送，避免收件人互相看到对方邮箱
+        List<String> errors = new ArrayList<>();
         try {
-            mailSender.send(msg.getTargets(), msg.getTitle(), html, attachments);
+            for (String target : msg.getTargets()) {
+                try {
+                    mailSender.send(List.of(target), msg.getTitle(), html, attachments);
+                } catch (Exception e) {
+                    errors.add(target + ": " + e.getMessage());
+                }
+            }
         } finally {
             Thread.currentThread().setContextClassLoader(origin);
+        }
+        if (!errors.isEmpty()) {
+            DEException.throwException(String.join("; ", errors));
         }
     }
 }

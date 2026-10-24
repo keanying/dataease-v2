@@ -198,3 +198,13 @@ casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2ap
 本仓库提供自研开源实现 `installer/dataease/de-screenshot`（Node + Playwright），安装包默认使用它（`DE_PLAYWRIGHT_IMAGE`）。
 截图服务以报告创建人身份打开 `#/preview?dvId=..&taskId=..`，等待网络请求结束并保持安静后再等待 `waitTime + renderTime` 秒截图。
 未配置截图服务时报告仍会发送，只是不含截图（任务日志会提示）。
+
+## 9. 数据填报
+
+* 存储数据源：MySQL / MariaDB、PostgreSQL / Kingbase、SQL Server、Oracle（12c+）、达梦（未实测）以及内置引擎；
+  安装了数据填报插件的类型优先使用插件。其他类型不显示“启用数据填报”开关，创建表单时提示不支持。
+* 删除表单（或目录）时，仅当数据表由表单创建、无其他表单引用且没有数据时才删除物理表，否则保留并记录日志；
+  新建表单的表名已存在时提示更换表名或绑定已有表。
+* 填报任务下发后按任务的通知方式（站内、邮件、企业微信、钉钉、飞书、国际飞书）发送，邮件逐个收件人发送；
+  渠道不可用、收件人无地址等问题记录在子任务日志中，不影响下发。
+* 可选配置 `dataease.data-filling.base-url`：设置后通知正文附带填报页面链接（`#/msg/msg-fill`）。
