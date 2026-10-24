@@ -204,8 +204,8 @@ public class UserServer implements UserApi {
 
     @Override
     public String create(UserCreator creator) {
-        if (!sysAdmin()) {
-            // 组织管理员只能在当前组织内创建用户
+        if (!sysAdmin() || creator.getDefaultOid() == null) {
+            // 组织管理员只能在当前组织内创建用户；未指定组织时放入当前组织
             creator.setDefaultOid(currentOid());
         }
         return String.valueOf(userManage.create(creator, EeConstants.ORIGIN_LOCAL, null));

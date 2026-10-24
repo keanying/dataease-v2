@@ -10,6 +10,7 @@ import io.dataease.api.permissions.user.dto.UserGridRequest;
 import io.dataease.ee.auth.PasswordUtils;
 import io.dataease.ee.common.EeConstants;
 import io.dataease.ee.permissions.auth.EeGrantManage;
+import io.dataease.ee.permissions.dao.entity.PerRole;
 import io.dataease.ee.permissions.dao.entity.PerUser;
 import io.dataease.ee.permissions.dao.entity.QPerUser;
 import io.dataease.ee.permissions.dao.entity.QPerUserPlatform;
@@ -129,7 +130,13 @@ public class EeUserManage {
         user.setMfaBound(false);
         perUserRepository.save(user);
         if (oid != null) {
-            roleManage.replaceRoles(user.getId(), oid, creator.getRoleIds());
+            List<Long> roleIds = creator.getRoleIds();
+            if (CollectionUtils.isEmpty(roleIds)) {
+                // 未选择角色时授予组织内置的普通用户角色，避免用户进入组织后没有任何权限
+                PerRole staff = roleManage.builtinRole(oid, EeConstants.ROLE_TYPE_STAFF);
+                roleIds = staff == null ? List.of() : List.of(staff.getId());
+            }
+            roleManage.replaceRoles(user.getId(), oid, roleIds);
         }
         if (creator.getVariables() != null) {
             variables().saveUserVariables(user.getId(), creator.getVariables());

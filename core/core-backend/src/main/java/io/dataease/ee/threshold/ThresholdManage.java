@@ -454,6 +454,26 @@ public class ThresholdManage {
         }
     }
 
+    /**
+     * 清理所属仪表板/数据大屏已被删除的告警（含镜像、检测任务与告警记录）
+     */
+    public void removeOrphans() {
+        Specification<ThresholdInfoBase> all = (root, query, cb) -> cb.conjunction();
+        Map<Long, Boolean> exists = new HashMap<>();
+        for (ThresholdInfoBase info : findAll(store(CORE), all)) {
+            Long rid = info.getResourceId();
+            if (rid != null && !exists.computeIfAbsent(rid, id -> dvRepository.existsById(id) || snapshotDvRepository.existsById(id))) {
+                remove(info, CORE, true);
+            }
+        }
+        for (ThresholdInfoBase info : findAll(store(SNAPSHOT), all)) {
+            Long rid = info.getResourceId();
+            if (rid != null && !snapshotDvRepository.existsById(rid) && !dvRepository.existsById(rid)) {
+                snapshotRepository.deleteById(info.getId());
+            }
+        }
+    }
+
     private void deleteInstances(List<Long> thresholdIds) {
         if (thresholdIds.isEmpty()) {
             return;
