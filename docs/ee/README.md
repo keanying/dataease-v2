@@ -191,3 +191,10 @@ casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2ap
 平台未配置或未启用时，该渠道记为“不可用”写入任务日志，其他渠道照常发送。新增渠道只需注册一个 `EeNotifyChannel` Bean。
 
 页头消息角标（`/msg-center/count`）为全部 `EeMsgCountProvider` 之和；目前数据填报的待填报任务数由 `DfMsgCountProvider` 提供。
+
+## 8. 报告截图服务
+
+定时报告通过 `dataease.playwright-server` 调用截图服务生成仪表板 / 数据大屏截图与 PDF。官方 `de-playwright-api` 为闭源镜像，
+本仓库提供自研开源实现 `installer/dataease/de-screenshot`（Node + Playwright），安装包默认使用它（`DE_PLAYWRIGHT_IMAGE`）。
+截图服务以报告创建人身份打开 `#/preview?dvId=..&taskId=..`，等待网络请求结束并保持安静后再等待 `waitTime + renderTime` 秒截图。
+未配置截图服务时报告仍会发送，只是不含截图（任务日志会提示）。
