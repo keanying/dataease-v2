@@ -101,7 +101,8 @@ public class EeLoginManage {
     public TokenVO externalPasswordLogin(int origin, String account, String pwd) {
         EeExternalLoginProvider provider = provider(origin);
         PerUser user = provider.passwordLogin(account, pwd);
-        return finishExternal(user, false);
+        // 前端 LDAP 登录不处理 MFA 步骤（views/login/index.vue），因此不要求 MFA
+        return finishExternal(user, false, true);
     }
 
     /**
@@ -110,17 +111,17 @@ public class EeLoginManage {
     public TokenVO platformLogin(int origin) {
         EeExternalLoginProvider provider = provider(origin);
         PerUser user = provider.platformLogin();
-        return finishExternal(user, true);
+        return finishExternal(user, true, false);
     }
 
-    private TokenVO finishExternal(PerUser user, boolean platform) {
+    private TokenVO finishExternal(PerUser user, boolean platform, boolean skipMfa) {
         if (user == null) {
             DEException.throwException(Translator.get("ee_platform_user_not_bound"));
         }
         if (!Boolean.TRUE.equals(user.getEnable())) {
             DEException.throwException(Translator.get("i18n_user_disable"));
         }
-        if (mfaManage.required(user, platform)) {
+        if (!skipMfa && mfaManage.required(user, platform)) {
             TokenVO tokenVO = new TokenVO(null, 0L);
             tokenVO.setMfa(mfaManage.begin(user));
             return tokenVO;
