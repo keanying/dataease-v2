@@ -42,6 +42,8 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.*;
 
@@ -245,7 +247,7 @@ public class DfFormManage {
                 try {
                     for (String comment : ddl.createComment(table, fields, form.getName())) {
                         try {
-                            session.execute(comment);
+                            session.executeOne(comment);
                         } catch (Exception e) {
                             LogUtil.warn("create comment failed: " + e.getMessage());
                         }
@@ -616,8 +618,87 @@ public class DfFormManage {
                 dataManage.deleteLogsByForm(f.getId());
             }
         }
+        List<OwnedTable> tables = ownedTables(forms);
         formRepository.deleteAllById(ids);
         treeSupport.remove(form.getId());
+        dropUnusedTablesAfterCommit(tables);
+    }
+
+    /**
+     * 表单自建的数据表（非绑定已有表）
+     */
+    private record OwnedTable(Long datasource, String table) {
+    }
+
+    private List<OwnedTable> ownedTables(List<DfForm> forms) {
+        List<OwnedTable> result = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (DfForm f : forms) {
+            if (!StringUtils.equals(f.getNodeType(), DfConstants.NODE_FORM) || Boolean.TRUE.equals(f.getUseExistsTable())
+                    || f.getDatasource() == null || StringUtils.isBlank(f.getTableName())) {
+                continue;
+            }
+            if (seen.add(f.getDatasource() + "/" + f.getTableName().toLowerCase())) {
+                result.add(new OwnedTable(f.getDatasource(), f.getTableName()));
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 删除表单的事务提交后清理其自建的数据表
+     */
+    private void dropUnusedTablesAfterCommit(List<OwnedTable> tables) {
+        if (tables.isEmpty()) {
+            return;
+        }
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    dropUnusedTables(tables);
+                }
+            });
+        } else {
+            dropUnusedTables(tables);
+        }
+    }
+
+    /**
+     * 自建表在没有其他表单引用且没有数据时删除，否则保留（只记录日志），任何异常都不影响删除表单本身
+     */
+    private void dropUnusedTables(List<OwnedTable> tables) {
+        QDfForm q = QDfForm.dfForm;
+        for (OwnedTable t : tables) {
+            String target = "datasource " + t.datasource() + ", table " + t.table();
+            try {
+                boolean referenced = queryFactory.selectOne().from(q)
+                        .where(q.nodeType.eq(DfConstants.NODE_FORM), q.datasource.eq(t.datasource()), q.tableName.equalsIgnoreCase(t.table()))
+                        .fetchFirst() != null;
+                if (referenced) {
+                    LogUtil.info("data filling: keep table of deleted form (still used by another form): " + target);
+                    continue;
+                }
+                try (DfSession session = jdbcSupport.open(t.datasource())) {
+                    if (!session.tableExists(t.table())) {
+                        continue;
+                    }
+                    long rows = session.rowCount(t.table());
+                    if (rows > 0) {
+                        LogUtil.info("data filling: keep table of deleted form (contains " + rows + " rows): " + target);
+                        continue;
+                    }
+                    if (session.ddl() == null) {
+                        LogUtil.info("data filling: keep table of deleted form (no DDL provider): " + target);
+                        continue;
+                    }
+                    session.execute(session.ddl().dropTableSql(t.table()));
+                    LogUtil.info("data filling: dropped empty table of deleted form: " + target);
+                }
+            } catch (Exception e) {
+                LogUtil.warn("data filling: keep table of deleted form (" + e.getMessage() + "): " + target);
+            }
+        }
     }
 
     /**
@@ -631,13 +712,16 @@ public class DfFormManage {
         }
         List<Long> ids = new ArrayList<>(descendants(id));
         ids.add(id);
-        for (DfForm f : formRepository.findAllById(ids)) {
+        List<DfForm> forms = formRepository.findAllById(ids);
+        for (DfForm f : forms) {
             if (StringUtils.equals(f.getNodeType(), DfConstants.NODE_FORM)) {
                 taskManage.deleteByForm(f.getId());
                 dataManage.deleteLogsByForm(f.getId());
             }
         }
+        List<OwnedTable> tables = ownedTables(forms);
         formRepository.deleteAllById(ids);
+        dropUnusedTablesAfterCommit(tables);
     }
 
     public Set<Long> descendants(Long id) {

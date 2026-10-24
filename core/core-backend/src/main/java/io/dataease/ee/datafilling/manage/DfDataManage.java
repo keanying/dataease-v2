@@ -108,7 +108,7 @@ public class DfDataManage {
             Map<String, Integer> types = session.columnTypes(meta.table());
             List<Object> params = new ArrayList<>();
             String where = where(session, meta, types, request.getSearchParams(), request.getPrimaryKeyValueList(), params);
-            String from = " FROM " + session.q(meta.table()) + where;
+            String from = " FROM " + session.table(meta.table()) + where;
             long total = session.count("SELECT COUNT(1)" + from, params);
             response.setTotal(total);
             List<String> select = new ArrayList<>();
@@ -155,11 +155,11 @@ public class DfDataManage {
                 DfFormMeta.Column c = meta.column(e.getKey());
                 String key = c == null ? e.getKey() : c.name();
                 Object v = e.getValue();
-                if (v instanceof BigDecimal d && c != null && c.type() != ExtTableField.BaseType.decimal) {
-                    v = d.stripTrailingZeros().toPlainString();
-                }
+                // Oracle 的 NUMBER(19) 读出为 BigDecimal，整数列先转为 long
                 if (c != null && c.type() == ExtTableField.BaseType.number && v instanceof Number n) {
                     v = n.longValue();
+                } else if (v instanceof BigDecimal d && c != null && c.type() != ExtTableField.BaseType.decimal) {
+                    v = d.stripTrailingZeros().toPlainString();
                 }
                 m.put(key, v);
             }
@@ -200,11 +200,13 @@ public class DfDataManage {
                     type = c.type();
                 }
                 String col = session.q(column);
+                Integer jdbcType = types.get(column.toLowerCase());
+                String cmp = session.dialect().comparable(col, jdbcType);
                 switch (term) {
                     case "null" -> conditions.add(col + " IS NULL");
                     case "not_null" -> conditions.add(col + " IS NOT NULL");
-                    case "empty" -> conditions.add("(" + col + " IS NULL OR " + col + " = '')");
-                    case "not_empty" -> conditions.add("(" + col + " IS NOT NULL AND " + col + " <> '')");
+                    case "empty" -> conditions.add(session.dialect().emptyCondition(col, jdbcType));
+                    case "not_empty" -> conditions.add(session.dialect().notEmptyCondition(col, jdbcType));
                     case "like", "not like", "not_like" -> {
                         if (DfValues.isEmpty(p.getValue())) {
                             continue;
@@ -218,11 +220,11 @@ public class DfDataManage {
                             continue;
                         }
                         if (!DfValues.isEmpty(values.get(0))) {
-                            conditions.add(col + " >= ?");
+                            conditions.add(cmp + " >= ?");
                             params.add(searchValue(values.get(0), type));
                         }
                         if (!DfValues.isEmpty(values.get(1))) {
-                            conditions.add(col + " <= ?");
+                            conditions.add(cmp + " <= ?");
                             params.add(searchValue(values.get(1), type));
                         }
                     }
@@ -248,7 +250,7 @@ public class DfDataManage {
                                 marks.add("?");
                                 params.add(searchValue(v, type));
                             }
-                            conditions.add(col + (not ? " NOT IN (" : " IN (") + String.join(", ", marks) + ")");
+                            conditions.add(cmp + (not ? " NOT IN (" : " IN (") + String.join(", ", marks) + ")");
                         }
                     }
                     default -> {
@@ -263,7 +265,7 @@ public class DfDataManage {
                             case "ge" -> ">=";
                             default -> "=";
                         };
-                        conditions.add(col + " " + op + " ?");
+                        conditions.add(cmp + " " + op + " ?");
                         params.add(searchValue(p.getValue(), type));
                     }
                 }
@@ -294,7 +296,7 @@ public class DfDataManage {
             }
         }
         List<Map<String, Object>> rows = normalize(meta, session.query("SELECT " + String.join(", ", select) + " FROM "
-                + session.q(meta.table()) + where, params));
+                + session.table(meta.table()) + where, params));
         return rows.isEmpty() ? null : rows.getFirst();
     }
 
@@ -444,7 +446,8 @@ public class DfDataManage {
                 if (s.isUnique() && provided && !DfValues.isEmpty(v)) {
                     List<Object> params = new ArrayList<>();
                     params.add(v);
-                    String sql = "SELECT COUNT(1) FROM " + session.q(meta.table()) + " WHERE " + session.q(c.name()) + " = ?";
+                    String sql = "SELECT COUNT(1) FROM " + session.table(meta.table()) + " WHERE "
+                            + session.dialect().comparable(session.q(c.name()), types.get(c.name().toLowerCase())) + " = ?";
                     if (pk != null) {
                         sql += " AND " + session.q(meta.pk()) + " <> ?";
                         params.add(DfValues.pkValue(pk, types.get(meta.pk().toLowerCase())));
@@ -669,9 +672,10 @@ public class DfDataManage {
         }
         try (DfSession session = jdbcSupport.open(dsId)) {
             List<Object> params = new ArrayList<>();
-            String where = treeWhere(session, tree, params);
-            String col = session.q(column);
-            String sql = "SELECT DISTINCT " + col + " FROM " + session.q(table) + " WHERE " + col + " IS NOT NULL"
+            Map<String, Integer> types = session.columnTypes(table);
+            String where = treeWhere(session, types, tree, params);
+            String col = session.dialect().comparable(session.q(column), types.get(column.toLowerCase()));
+            String sql = "SELECT DISTINCT " + col + " FROM " + session.table(table) + " WHERE " + session.q(column) + " IS NOT NULL"
                     + (StringUtils.isBlank(where) ? "" : " AND (" + where + ")")
                     + " ORDER BY " + col + (StringUtils.equalsIgnoreCase(order, "desc") ? " DESC" : " ASC");
             for (List<String> row : session.queryStrings(sql, params, OPTION_LIMIT)) {
@@ -719,8 +723,10 @@ public class DfDataManage {
             valid.forEach(e -> select.add(session.q(e.getFieldName())));
             List<Object> params = new ArrayList<>();
             params.add(value);
-            String where = treeWhere(session, tree, params);
-            String sql = "SELECT " + String.join(", ", select) + " FROM " + session.q(table) + " WHERE " + session.q(column) + " = ?"
+            Map<String, Integer> types = session.columnTypes(table);
+            String where = treeWhere(session, types, tree, params);
+            String sql = "SELECT " + String.join(", ", select) + " FROM " + session.table(table) + " WHERE "
+                    + session.dialect().comparable(session.q(column), types.get(column.toLowerCase())) + " = ?"
                     + (StringUtils.isBlank(where) ? "" : " AND (" + where + ")");
             List<List<String>> rows = session.queryStrings(sql, params, 1);
             List<String> row = rows.isEmpty() ? null : rows.getFirst();
@@ -735,7 +741,7 @@ public class DfDataManage {
     /**
      * 选项数据源的行过滤树
      */
-    private String treeWhere(DfSession session, ExtTableField.DfRowPermissionsTreeObj tree, List<Object> params) {
+    private String treeWhere(DfSession session, Map<String, Integer> types, ExtTableField.DfRowPermissionsTreeObj tree, List<Object> params) {
         if (tree == null || CollectionUtils.isEmpty(tree.getItems())) {
             return null;
         }
@@ -745,7 +751,7 @@ public class DfDataManage {
                 continue;
             }
             if (StringUtils.equals(item.getType(), "tree")) {
-                String sub = treeWhere(session, item.getSubTree(), params);
+                String sub = treeWhere(session, types, item.getSubTree(), params);
                 if (StringUtils.isNotBlank(sub)) {
                     parts.add("(" + sub + ")");
                 }
@@ -754,7 +760,9 @@ public class DfDataManage {
             if (StringUtils.isBlank(item.getFieldId())) {
                 continue;
             }
-            String col = session.q(item.getFieldId());
+            String raw = session.q(item.getFieldId());
+            Integer jdbcType = types.get(item.getFieldId().toLowerCase());
+            String col = session.dialect().comparable(raw, jdbcType);
             String term = StringUtils.defaultIfBlank(item.getTerm(), "eq");
             if (StringUtils.equals(item.getFilterType(), "enum")) {
                 List<String> values = item.getEnumValue();
@@ -771,16 +779,16 @@ public class DfDataManage {
             }
             String value = item.getValue();
             switch (term) {
-                case "null" -> parts.add(col + " IS NULL");
-                case "not_null" -> parts.add(col + " IS NOT NULL");
-                case "empty" -> parts.add("(" + col + " IS NULL OR " + col + " = '')");
-                case "not_empty" -> parts.add("(" + col + " IS NOT NULL AND " + col + " <> '')");
+                case "null" -> parts.add(raw + " IS NULL");
+                case "not_null" -> parts.add(raw + " IS NOT NULL");
+                case "empty" -> parts.add(session.dialect().emptyCondition(raw, jdbcType));
+                case "not_empty" -> parts.add(session.dialect().notEmptyCondition(raw, jdbcType));
                 case "like" -> {
-                    parts.add(col + " LIKE ?");
+                    parts.add(raw + " LIKE ?");
                     params.add("%" + StringUtils.defaultString(value) + "%");
                 }
                 case "not like" -> {
-                    parts.add(col + " NOT LIKE ?");
+                    parts.add(raw + " NOT LIKE ?");
                     params.add("%" + StringUtils.defaultString(value) + "%");
                 }
                 case "in", "not in" -> {
