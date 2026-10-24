@@ -20,7 +20,7 @@
 | `interact` | `@XpackInteract` 扩展切面与 `@EeExtension` |
 | `auth` | 身份识别过滤器、登录、token、MFA、密码 |
 | `permissions` | 组织、角色、用户、菜单、资源登记、权限计算、权限配置 |
-| `setting` | 系统参数读写 |
+| `setting` | 系统参数读写、`perSetting` 扩展（基础设置企业版项、默认登录、外观 UI 列表、导出模式）、外观设置、邮件设置与发送（`EeMailSender`）、MFA/HMAC 设置与 HMAC 校验过滤器、API Key、嵌入式应用与嵌入式 token |
 | `plugin` | 插件管理 |
 | `init` | 初始化与升级数据（版本组 3） |
 
@@ -87,6 +87,40 @@ java -jar core/core-backend/target/CoreApplication.jar
 | `dataease.login_timeout` | `480`（分钟） | 登录有效期 |
 | `dataease.default-pwd` | `DataEase@123456` | 新建用户、重置密码使用的默认密码 |
 | `dataease.path.plugin` | `/opt/dataease3.0/data/plugin` | 插件包目录 |
+| `dataease.path.appearance` | `/opt/dataease3.0/data/appearance` | 外观设置图片目录（文件名 `<雪花ID>.<扩展名>`） |
+| `dataease.appearance.max-image-size` | `10485760` | 外观图片大小上限（字节） |
+| `dataease.embedded.limit` | `0` | 嵌入式应用数量上限，0 不限 |
+| `dataease.embedded.origin-check` | `true` | 嵌入式 token 跨站请求是否校验 `Origin` 在应用域名内 |
+
+## 4.1 外部调用凭证
+
+### API Key（`X-DE-ASK-TOKEN`）
+个人中心生成 API Key（每个用户最多 5 个，`accessKey` 16 位、`accessSecret` 32 位）。调用接口时在请求头携带
+`X-DE-ASK-TOKEN: <JWT>`：
+
+* JWT 使用 HS256，以 `accessSecret` 为签名密钥；
+* 载荷必须包含 `accessKey`，建议携带 `exp`（秒，携带时校验过期，推荐几分钟）；
+* 以该 Key 所属用户及其当前组织身份访问，权限与该用户一致；Key 停用、删除或用户被禁用后立即失效；
+* 以 API Key 身份不能管理 API Key；HMAC 签名校验对 API Key 请求不生效（JWT 已签名）。
+
+```python
+import jwt, time, requests  # PyJWT
+token = jwt.encode({"accessKey": AK, "exp": int(time.time()) + 300}, SK, algorithm="HS256")
+requests.get("http://host:8100/de2api/user/info", headers={"X-DE-ASK-TOKEN": token})
+```
+
+### 嵌入式 token（`X-EMBEDDED-TOKEN`）
+宿主系统生成 HS256 JWT，以嵌入式应用的 `appSecret` 签名，声明 `appId`（应用）、`account`（以哪个 DataEase 账号访问，
+兼容 `user`），可选 `exp`；其余声明作为外部参数由 `/embedded/getTokenArgs` 返回（保留声明 `appId, account, user,
+uid, exp, iat, nbf, iss, sub, aud, jti` 除外）。优先级：公共链接 token > 嵌入式 token > API Key > 登录 token。
+重置或因密钥长度变化重新生成密钥后，旧 token 失效；`/embedded/logout` 注销当前 token（单节点内存）。
+`/embedded/initIframe` 校验 iframe 父页面来源（RSA 加密的 base64 origin）在应用域名（逗号分隔，按 scheme://host[:port] 比较）内。
+
+### HMAC 请求签名
+`hmac.enable=true` 时，`/de2api` 下非白名单请求必须携带
+`X-Date: <RFC1123 GMT>` 与 `Authorization: Signature keyId="dataease-key",algorithm="hmac-sha256",headers="@request-target X-Date",signature="<base64(HMAC-SHA256(secret, "dataease-key\n<METHOD> <path>\nX-Date: <date>\n"))>"`，
+`|now - X-Date| ≤ hmac.clockSkew` 秒。`path` 为请求 URI（含上下文路径与 `/de2api`、查询串，兼容 axios 查询串编码、绝对地址与
+casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2api` 请求与 API Key 请求不校验；失败返回 HTTP 401。
 
 ## 5. 插件包约定
 
