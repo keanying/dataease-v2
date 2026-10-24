@@ -40,7 +40,10 @@ public class DfExcelManage {
 
     private final DfDataManage dataManage;
 
-    @Value("${dataease.path.data-filling:#{systemProperties['java.io.tmpdir']}/dataease-df-excel/}")
+    /**
+     * 上传文件暂存目录（CoreApplication 把 java.io.tmpdir 设为 "null"，不能用系统临时目录，与其他数据目录放在一起）
+     */
+    @Value("${dataease.path.data-filling:/opt/dataease3.0/data/data-filling/}")
     private String excelPath;
 
     public DfExcelManage(DfDataManage dataManage) {

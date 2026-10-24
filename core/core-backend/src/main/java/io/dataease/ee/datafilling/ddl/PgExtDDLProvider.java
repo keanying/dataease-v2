@@ -23,13 +23,20 @@ public class PgExtDDLProvider extends ExtDDLProvider {
         return "\"" + StringUtils.replace(name, "\"", "\"\"") + "\"";
     }
 
+    /**
+     * 引用后的表名（子类可加模式前缀）
+     */
+    protected String table(String name) {
+        return quote(name);
+    }
+
     protected String literal(String text) {
         return "'" + StringUtils.replace(StringUtils.defaultString(text), "'", "''") + "'";
     }
 
     @Override
     public String createTableSql(String table, List<ExtTableField> formFields) {
-        StringBuilder sb = new StringBuilder("CREATE TABLE ").append(quote(table)).append(" (");
+        StringBuilder sb = new StringBuilder("CREATE TABLE ").append(table(table)).append(" (");
         sb.append(quote(DfConstants.DEFAULT_PK)).append(" BIGSERIAL PRIMARY KEY");
         for (ExtTableField.TableField column : DfDDLSupport.columns(formFields)) {
             sb.append(", ").append(quote(column.getColumnName())).append(" ").append(columnType(column)).append(" NULL");
@@ -42,11 +49,11 @@ public class PgExtDDLProvider extends ExtDDLProvider {
     public List<String> createComment(String table, List<ExtTableField> formFields, String tableComment) {
         List<String> result = new ArrayList<>();
         if (StringUtils.isNotBlank(tableComment)) {
-            result.add("COMMENT ON TABLE " + quote(table) + " IS " + literal(tableComment));
+            result.add("COMMENT ON TABLE " + table(table) + " IS " + literal(tableComment));
         }
         for (ExtTableField.TableField column : DfDDLSupport.columns(formFields)) {
             if (StringUtils.isNotBlank(column.getComment())) {
-                result.add("COMMENT ON COLUMN " + quote(table) + "." + quote(column.getColumnName()) + " IS " + literal(column.getComment()));
+                result.add("COMMENT ON COLUMN " + table(table) + "." + quote(column.getColumnName()) + " IS " + literal(column.getComment()));
             }
         }
         return result;
@@ -69,7 +76,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
         List<String> statements = new ArrayList<>();
         for (ExtTableField.TableField column : DfDDLSupport.columns(formFieldsToModify)) {
             if (StringUtils.isNotBlank(column.getOldColumnName()) && !StringUtils.equals(column.getOldColumnName(), column.getColumnName())) {
-                statements.add("ALTER TABLE " + quote(table) + " RENAME COLUMN " + quote(column.getOldColumnName()) + " TO " + quote(column.getColumnName()));
+                statements.add("ALTER TABLE " + table(table) + " RENAME COLUMN " + quote(column.getOldColumnName()) + " TO " + quote(column.getColumnName()));
             }
         }
         List<String> adds = new ArrayList<>();
@@ -77,7 +84,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
             adds.add("ADD COLUMN " + quote(column.getColumnName()) + " " + columnType(column) + " NULL");
         }
         if (!adds.isEmpty()) {
-            statements.add("ALTER TABLE " + quote(table) + " " + String.join(", ", adds));
+            statements.add("ALTER TABLE " + table(table) + " " + String.join(", ", adds));
         }
         return statements.isEmpty() ? null : String.join(";", statements);
     }
@@ -88,12 +95,12 @@ public class PgExtDDLProvider extends ExtDDLProvider {
         for (ExtTableField.TableField column : DfDDLSupport.columns(formFields)) {
             parts.add("DROP COLUMN " + quote(column.getColumnName()));
         }
-        return parts.isEmpty() ? null : "ALTER TABLE " + quote(table) + " " + String.join(", ", parts);
+        return parts.isEmpty() ? null : "ALTER TABLE " + table(table) + " " + String.join(", ", parts);
     }
 
     @Override
     public String dropTableSql(String table) {
-        return "DROP TABLE IF EXISTS " + quote(table);
+        return "DROP TABLE IF EXISTS " + table(table);
     }
 
     @Override
@@ -112,7 +119,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
                         : StringUtils.equalsIgnoreCase(c.getOrder(), "asc") ? " ASC" : "";
                 cols.add(quote(c.getColumn()) + order);
             }
-            result.add("CREATE INDEX " + quote(index.getName()) + " ON " + quote(table) + " (" + String.join(", ", cols) + ")");
+            result.add("CREATE INDEX " + quote(index.getName()) + " ON " + table(table) + " (" + String.join(", ", cols) + ")");
         }
         return result;
     }
@@ -133,7 +140,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
     public String deleteDataByIdsSql(String table, List<TableFieldWithValue> pks) {
         List<String> marks = new ArrayList<>();
         pks.forEach(p -> marks.add("?"));
-        return "DELETE FROM " + quote(table) + " WHERE " + quote(pks.get(0).getFiledName()) + " IN (" + String.join(", ", marks) + ")";
+        return "DELETE FROM " + table(table) + " WHERE " + quote(pks.get(0).getFiledName()) + " IN (" + String.join(", ", marks) + ")";
     }
 
     @Override
@@ -149,7 +156,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
         for (int i = 0; i < Math.max(count, 1); i++) {
             rows.add(values);
         }
-        return "INSERT INTO " + quote(tableName) + " (" + String.join(", ", cols) + ") VALUES " + String.join(", ", rows);
+        return "INSERT INTO " + table(tableName) + " (" + String.join(", ", cols) + ") VALUES " + String.join(", ", rows);
     }
 
     @Override
@@ -158,7 +165,7 @@ public class PgExtDDLProvider extends ExtDDLProvider {
         for (TableFieldWithValue f : fields) {
             sets.add(quote(f.getFiledName()) + " = ?");
         }
-        return "UPDATE " + quote(tableName) + " SET " + String.join(", ", sets) + " WHERE " + quote(pk.getFiledName()) + " = ?";
+        return "UPDATE " + table(tableName) + " SET " + String.join(", ", sets) + " WHERE " + quote(pk.getFiledName()) + " = ?";
     }
 
     @Override
@@ -177,12 +184,12 @@ public class PgExtDDLProvider extends ExtDDLProvider {
 
     @Override
     public String truncateTable(String table) {
-        return "TRUNCATE TABLE " + quote(table);
+        return "TRUNCATE TABLE " + table(table);
     }
 
     @Override
     public String listAllIds(String table, String keyColumn) {
-        return "SELECT " + quote(keyColumn) + " FROM " + quote(table);
+        return "SELECT " + quote(keyColumn) + " FROM " + table(table);
     }
 
     @Override

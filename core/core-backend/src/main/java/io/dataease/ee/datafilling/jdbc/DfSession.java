@@ -27,6 +27,11 @@ public class DfSession implements AutoCloseable {
 
     private ExtDDLProvider ddl;
 
+    /**
+     * 显式指定的模式（SQL Server 用于限定表名；为空时使用连接默认模式）
+     */
+    private String schema;
+
     public DfSession(ConnectionObj connectionObj, String type) {
         this.connectionObj = connectionObj;
         this.connection = connectionObj.getConnection();
@@ -57,28 +62,92 @@ public class DfSession implements AutoCloseable {
         this.ddl = ddl;
     }
 
+    public String getSchema() {
+        return schema;
+    }
+
+    public void setSchema(String schema) {
+        this.schema = StringUtils.trimToNull(schema);
+    }
+
     public String q(String name) {
         return dialect.quote(name);
     }
 
     /**
-     * 执行 DDL，多条语句以分号分隔
+     * 引用后的表名；SQL Server 指定了模式时带模式前缀
+     */
+    public String table(String name) {
+        if (schema != null && dialect.isSqlServer()) {
+            return q(schema) + "." + q(name);
+        }
+        return q(name);
+    }
+
+    /**
+     * 执行 DDL，多条语句以分号分隔（引号内的分号不作为分隔符）
      */
     public void execute(String sql) {
         if (StringUtils.isBlank(sql)) {
             return;
         }
-        for (String one : sql.split(";")) {
-            if (StringUtils.isBlank(one)) {
+        for (String one : split(sql)) {
+            executeOne(one);
+        }
+    }
+
+    /**
+     * 执行单条语句（不拆分）
+     */
+    public void executeOne(String sql) {
+        if (StringUtils.isBlank(sql)) {
+            return;
+        }
+        LogUtil.info("data filling ddl: " + sql);
+        try (Statement st = connection.createStatement()) {
+            st.execute(sql);
+        } catch (SQLException e) {
+            DEException.throwException("SQL ERROR: " + e.getMessage());
+        }
+    }
+
+    /**
+     * 按分号拆分语句，跳过单引号、双引号、反引号、方括号内的内容
+     */
+    static List<String> split(String sql) {
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        char quote = 0;
+        for (int i = 0; i < sql.length(); i++) {
+            char c = sql.charAt(i);
+            if (quote != 0) {
+                current.append(c);
+                char close = quote == '[' ? ']' : quote;
+                if (c == close) {
+                    if (i + 1 < sql.length() && sql.charAt(i + 1) == close) {
+                        current.append(sql.charAt(++i));
+                    } else {
+                        quote = 0;
+                    }
+                }
                 continue;
             }
-            LogUtil.info("data filling ddl: " + one);
-            try (Statement st = connection.createStatement()) {
-                st.execute(one);
-            } catch (SQLException e) {
-                DEException.throwException("SQL ERROR: " + e.getMessage());
+            if (c == '\'' || c == '"' || c == '`' || c == '[') {
+                quote = c;
+                current.append(c);
+            } else if (c == ';') {
+                if (StringUtils.isNotBlank(current)) {
+                    result.add(current.toString().trim());
+                }
+                current.setLength(0);
+            } else {
+                current.append(c);
             }
         }
+        if (StringUtils.isNotBlank(current)) {
+            result.add(current.toString().trim());
+        }
+        return result;
     }
 
     public int update(String sql, List<Object> params) {
@@ -96,8 +165,23 @@ public class DfSession implements AutoCloseable {
      */
     public List<String> insert(String sql, List<Object> params, String pk) {
         List<String> keys = new ArrayList<>();
+        if (pk != null && dialect.isOracle()) {
+            // ojdbc 的 prepareStatement(sql, String[]) 会把带引号的小写表名转成大写去查找，改用 RETURNING INTO
+            try (CallableStatement cs = connection.prepareCall("BEGIN " + sql + " RETURNING " + q(pk) + " INTO ?; END;")) {
+                bind(cs, params);
+                int out = (params == null ? 0 : params.size()) + 1;
+                cs.registerOutParameter(out, Types.VARCHAR);
+                cs.execute();
+                String key = cs.getString(out);
+                if (key != null) {
+                    keys.add(key);
+                }
+            } catch (SQLException e) {
+                DEException.throwException("SQL ERROR: " + e.getMessage());
+            }
+            return keys;
+        }
         try (PreparedStatement ps = pk == null ? connection.prepareStatement(sql)
-                : dialect.isOracle() ? connection.prepareStatement(sql, new String[]{pk})
                 : connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
             bind(ps, params);
             ps.executeUpdate();
@@ -247,7 +331,7 @@ public class DfSession implements AutoCloseable {
         for (int i = 0; i < params.size(); i++) {
             Object v = params.get(i);
             if (v == null) {
-                ps.setNull(i + 1, Types.NULL);
+                ps.setNull(i + 1, dialect.nullType());
             } else if (v instanceof java.util.Date date && !(v instanceof Timestamp) && !(v instanceof java.sql.Date)) {
                 ps.setTimestamp(i + 1, new Timestamp(date.getTime()));
             } else {
@@ -322,7 +406,7 @@ public class DfSession implements AutoCloseable {
     public Map<String, Integer> columnTypes(String table) {
         Map<String, Integer> result = new HashMap<>();
         try (Statement st = connection.createStatement();
-             ResultSet rs = st.executeQuery("SELECT * FROM " + q(table) + " WHERE 1 = 0")) {
+             ResultSet rs = st.executeQuery("SELECT * FROM " + table(table) + " WHERE 1 = 0")) {
             ResultSetMetaData meta = rs.getMetaData();
             for (int i = 1; i <= meta.getColumnCount(); i++) {
                 result.put(meta.getColumnName(i).toLowerCase(), meta.getColumnType(i));
@@ -334,12 +418,22 @@ public class DfSession implements AutoCloseable {
     }
 
     private String schema() {
+        if (schema != null) {
+            return schema;
+        }
         try {
-            String schema = connection.getSchema();
-            return StringUtils.isBlank(schema) ? null : schema;
+            String current = connection.getSchema();
+            return StringUtils.isBlank(current) ? null : current;
         } catch (Throwable e) {
             return null;
         }
+    }
+
+    /**
+     * 表中数据行数
+     */
+    public long rowCount(String table) {
+        return count("SELECT COUNT(1) FROM " + table(table), null);
     }
 
     private static int deType(int sqlType) {

@@ -2,6 +2,7 @@ package io.dataease.ee.plugin;
 
 import io.dataease.api.xpack.component.XpackComponentApi;
 import io.dataease.api.xpack.component.vo.XpackMenuVO;
+import io.dataease.ee.datafilling.jdbc.DfJdbcSupport;
 import io.dataease.exception.DEException;
 import io.dataease.extensions.datafilling.vo.XpackPluginsDfVO;
 import io.dataease.extensions.datasource.vo.XpackPluginsDatasourceVO;
@@ -12,6 +13,7 @@ import io.dataease.utils.JsonUtil;
 import io.dataease.utils.ServletUtils;
 import jakarta.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -32,9 +34,12 @@ public class XpackComponentServer implements XpackComponentApi {
 
     private final EePluginManage pluginManage;
 
-    public XpackComponentServer(EePluginCatalog catalog, EePluginManage pluginManage) {
+    private final DfJdbcSupport dfJdbcSupport;
+
+    public XpackComponentServer(EePluginCatalog catalog, EePluginManage pluginManage, @Lazy DfJdbcSupport dfJdbcSupport) {
         this.catalog = catalog;
         this.pluginManage = pluginManage;
+        this.dfJdbcSupport = dfJdbcSupport;
     }
 
     @Override
@@ -69,7 +74,9 @@ public class XpackComponentServer implements XpackComponentApi {
 
     @Override
     public XpackPluginsDfVO dfPlugin(String type) {
-        return catalog.queryPluginDf(type);
+        XpackPluginsDfVO vo = catalog.queryPluginDf(type);
+        // 数据填报内置支持的存储类型（PostgreSQL、SQL Server、Oracle 等）同样显示“开启数据填报”开关
+        return vo != null ? vo : dfJdbcSupport.builtinPlugin(type);
     }
 
     @Override

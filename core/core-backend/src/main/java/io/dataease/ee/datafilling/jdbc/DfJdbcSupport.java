@@ -1,25 +1,34 @@
 package io.dataease.ee.datafilling.jdbc;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import io.dataease.dao.auto.entity.CoreDatasource;
 import io.dataease.datasource.manage.DataSourceManage;
 import io.dataease.ee.datafilling.DfConstants;
+import io.dataease.ee.datafilling.ddl.SqlServerExtDDLProvider;
+import io.dataease.ee.datafilling.manage.DfJson;
 import io.dataease.exception.DEException;
 import io.dataease.extensions.datafilling.factory.ExtDDLProviderFactory;
 import io.dataease.extensions.datafilling.provider.ExtDDLProvider;
+import io.dataease.extensions.datafilling.vo.XpackPluginsDfVO;
 import io.dataease.extensions.datasource.dto.ConnectionObj;
 import io.dataease.extensions.datasource.dto.DatasourceDTO;
 import io.dataease.extensions.datasource.factory.ProviderFactory;
 import io.dataease.extensions.datasource.provider.Provider;
 import io.dataease.i18n.Translator;
 import io.dataease.utils.BeanUtils;
+import io.dataease.utils.LogUtil;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
- * 打开填报存储/选项数据源的 JDBC 会话，选择 DDL 生成器
+ * 打开填报存储/选项数据源的 JDBC 会话，选择 DDL 生成器。
+ * <p>内置支持的存储类型：mysql、mariadb、pg、kingbase、sqlServer、oracle、dm（达梦，需安装达梦数据源插件）；
+ * 其他类型需由数据填报插件（{@link ExtDDLProviderFactory}）提供。</p>
  */
 @Component
 public class DfJdbcSupport {
@@ -28,16 +37,26 @@ public class DfJdbcSupport {
 
     private final DataSourceManage dataSourceManage;
 
-    private final ExtDDLProvider mysqlProvider;
+    private final Map<String, ExtDDLProvider> builtin;
 
-    private final ExtDDLProvider pgProvider;
+    private final SqlServerExtDDLProvider sqlServerProvider;
 
     public DfJdbcSupport(@Lazy DataSourceManage dataSourceManage,
-                         @Lazy @org.springframework.beans.factory.annotation.Qualifier("mysqlExtDDLProvider") ExtDDLProvider mysqlProvider,
-                         @Lazy @org.springframework.beans.factory.annotation.Qualifier("pgExtDDLProvider") ExtDDLProvider pgProvider) {
+                         @Qualifier("mysqlExtDDLProvider") ExtDDLProvider mysqlProvider,
+                         @Qualifier("pgExtDDLProvider") ExtDDLProvider pgProvider,
+                         @Qualifier("sqlServerExtDDLProvider") SqlServerExtDDLProvider sqlServerProvider,
+                         @Qualifier("oracleExtDDLProvider") ExtDDLProvider oracleProvider,
+                         @Qualifier("dmExtDDLProvider") ExtDDLProvider dmProvider) {
         this.dataSourceManage = dataSourceManage;
-        this.mysqlProvider = mysqlProvider;
-        this.pgProvider = pgProvider;
+        this.sqlServerProvider = sqlServerProvider;
+        this.builtin = Map.of(
+                "mysql", mysqlProvider,
+                "mariadb", mysqlProvider,
+                "pg", pgProvider,
+                "kingbase", pgProvider,
+                "sqlserver", sqlServerProvider,
+                "oracle", oracleProvider,
+                "dm", dmProvider);
     }
 
     /**
@@ -89,8 +108,61 @@ public class DfJdbcSupport {
             DEException.throwException(Translator.get("ee_df_datasource_connect_failed"));
         }
         DfSession session = new DfSession(obj, ds.getType());
-        session.setDdl(ddlProvider(ds.getType()));
+        try {
+            initSession(session, ds);
+        } catch (RuntimeException e) {
+            session.close();
+            throw e;
+        }
         return session;
+    }
+
+    /**
+     * 按数据源配置的模式初始化会话并选择 DDL 生成器
+     */
+    private void initSession(DfSession session, CoreDatasource ds) {
+        ExtDDLProvider ddl = ddlProvider(ds.getType());
+        String schema = configuredSchema(ds);
+        DfDialect dialect = session.dialect();
+        if (dialect.isSqlServer()) {
+            if (StringUtils.isBlank(schema)) {
+                List<List<String>> rows = session.queryStrings("SELECT SCHEMA_NAME()", null, 1);
+                schema = rows.isEmpty() ? null : rows.getFirst().getFirst();
+            }
+            session.setSchema(StringUtils.defaultIfBlank(schema, "dbo"));
+            if (ddl == sqlServerProvider) {
+                ddl = sqlServerProvider.withSchema(session.getSchema());
+            }
+        } else if (dialect.isOracleLike() && StringUtils.isNotBlank(schema)) {
+            String current = null;
+            try {
+                current = session.connection().getSchema();
+            } catch (Throwable ignore) {
+            }
+            if (!StringUtils.equals(current, schema.trim())) {
+                String sql = dialect.isOracle() ? "ALTER SESSION SET CURRENT_SCHEMA = " + session.q(schema.trim())
+                        : "SET SCHEMA " + session.q(schema.trim());
+                try {
+                    session.executeOne(sql);
+                } catch (Exception e) {
+                    LogUtil.warn("data filling: switch schema failed: " + e.getMessage());
+                }
+            }
+        }
+        session.setDdl(ddl);
+    }
+
+    private String configuredSchema(CoreDatasource ds) {
+        if (StringUtils.isBlank(ds.getConfiguration())) {
+            return null;
+        }
+        try {
+            JsonNode node = DfJson.MAPPER.readTree(ds.getConfiguration());
+            JsonNode schema = node == null ? null : node.get("schema");
+            return schema == null || schema.isNull() ? null : StringUtils.trimToNull(schema.asText());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
@@ -105,16 +177,27 @@ public class DfJdbcSupport {
             return null;
         }
         if (StringUtils.equalsAnyIgnoreCase(type, "mysql", "mariadb")) {
-            return mysqlProvider;
+            return builtin.get("mysql");
         }
         ExtDDLProvider plugin = ExtDDLProviderFactory.getInstance(type);
         if (plugin != null) {
             return plugin;
         }
-        if (StringUtils.equalsAnyIgnoreCase(type, "pg", "kingbase")) {
-            return pgProvider;
+        return builtin.get(type.toLowerCase());
+    }
+
+    /**
+     * 内置支持数据填报的数据源类型对应的插件描述（前端据此显示“开启数据填报”开关）；没有内置支持时返回 null
+     */
+    public XpackPluginsDfVO builtinPlugin(String type) {
+        if (StringUtils.isBlank(type) || !builtin.containsKey(type.toLowerCase())) {
+            return null;
         }
-        return null;
+        XpackPluginsDfVO vo = new XpackPluginsDfVO();
+        vo.setType(type);
+        vo.setCategory("builtin");
+        vo.setFlag(0);
+        return vo;
     }
 
     public ExtDDLProvider requireDdl(DfSession session) {

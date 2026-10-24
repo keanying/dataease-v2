@@ -71,10 +71,14 @@ public class DfTaskManage {
 
     private final TransactionTemplate transactionTemplate;
 
+    private final DfTaskNotifier notifier;
+
     public DfTaskManage(DfTaskRepository taskRepository, DfSubTaskRepository subTaskRepository, DfUserTaskRepository userTaskRepository,
                         DfUserTaskItemRepository itemRepository, JPAQueryFactory queryFactory, DfAccess access, DfUsers users,
                         DfJdbcSupport jdbcSupport, DfDataManage dataManage, DfExcelManage excelManage,
-                        @Lazy DeDataFillingTaskExecutor executor, @Lazy WsService wsService, TransactionTemplate transactionTemplate) {
+                        @Lazy DeDataFillingTaskExecutor executor, @Lazy WsService wsService, TransactionTemplate transactionTemplate,
+                        DfTaskNotifier notifier) {
+        this.notifier = notifier;
         this.taskRepository = taskRepository;
         this.subTaskRepository = subTaskRepository;
         this.userTaskRepository = userTaskRepository;
@@ -486,9 +490,10 @@ public class DfTaskManage {
         DfTask task = task(request.getTaskId());
         access.require(task.getFormId(), EeConstants.WEIGHT_READ);
         QDfSubTask q = QDfSubTask.dfSubTask;
+        // 失败信息，或成功下发但消息渠道发送有问题时记录的提示
         DfSubTask sub = queryFactory.selectFrom(q)
                 .where(request.getInstanceId() != null ? q.id.eq(request.getInstanceId()) : q.taskId.eq(task.getId()),
-                        q.execStatus.eq(DfConstants.EXEC_FAILED))
+                        q.errorMsg.isNotNull())
                 .orderBy(q.createTime.desc()).fetchFirst();
         if (sub != null && StringUtils.isNotBlank(sub.getErrorMsg())) {
             return sub.getErrorMsg();
@@ -698,7 +703,25 @@ public class DfTaskManage {
             }
         }
         notifyUsers(task, sub, receivers);
+        if (Objects.equals(sub.getExecStatus(), DfConstants.EXEC_SUCCESS)) {
+            Long subId = sub.getId();
+            notifier.notifyAsync(task, end, receivers, summary -> recordNotifyResult(subId, summary));
+        }
         return sub.getId();
+    }
+
+    /**
+     * 外部消息发送中的问题写入子任务日志（不改变执行状态）
+     */
+    private void recordNotifyResult(Long subId, String summary) {
+        if (StringUtils.isBlank(summary)) {
+            return;
+        }
+        String msg = Translator.get("ee_df_notify_result") + "\n" + summary;
+        transactionTemplate.executeWithoutResult(s -> {
+            QDfSubTask q = QDfSubTask.dfSubTask;
+            queryFactory.update(q).set(q.errorMsg, msg).where(q.id.eq(subId)).execute();
+        });
     }
 
     private void updateTaskExec(Long taskId, int status, String error) {
@@ -755,7 +778,7 @@ public class DfTaskManage {
         try (DfSession session = jdbcSupport.open(meta.form().getDatasource())) {
             List<Object> params = new ArrayList<>();
             String where = filterWhere(session, meta, filters, params);
-            String sql = "SELECT " + session.q(meta.pk()) + ", " + session.q(fit.name()) + " FROM " + session.q(meta.table())
+            String sql = "SELECT " + session.q(meta.pk()) + ", " + session.q(fit.name()) + " FROM " + session.table(meta.table())
                     + (StringUtils.isBlank(where) ? "" : " WHERE " + where);
             for (List<String> row : session.queryStrings(sql, params, 0)) {
                 String pk = row.get(0);
