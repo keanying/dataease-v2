@@ -94,3 +94,43 @@ java -jar core/core-backend/target/CoreApplication.jar
 * `plugin/{moduleName}.svg`：图标。
 * `static/{moduleName}.js`：前端入口，定义 `window[moduleName] = { mapping: { "<base64(moduleName/路径)>": {default: VueComponent} } }`。
 * 入口类实现 `DataEaseDatasourcePlugin` / `DataEaseChartPlugin` / `DataFillingPlugin` / `DataEaseSyncDatasourcePlugin`。
+
+## 6. 认证集成与平台对接（`io.dataease.ee.sso`、`io.dataease.ee.platform`）
+
+配置统一存放在 `ee_auth_config`（name ∈ ldap/oidc/cas/oauth2/saml2/dingtalk/lark/larksuite/wecom，内容对称加密）。
+外部身份通过 `EeSsoUserManage` 对应到用户：先查绑定关系 `per_user_platform(origin, platform_uid)`，账号类来源（LDAP/OIDC/CAS/OAuth2/SAML2）再按“同来源同账号”匹配，
+否则按 `basic.autoCreateUser`、`basic.platformOid`（默认 1）、`basic.platformRid`（为空时取组织内置普通用户角色）自动创建。
+外部身份**不会**匹配来源不同的同名本地账号（防止 IdP 中的 `admin` 冒用本地管理员），此时提示账号冲突。
+
+| 方式 | 流程 |
+| --- | --- |
+| LDAP | `/login/localLogin` origin=1：管理员 DN 绑定 → 各 OU（`|` 分隔）按过滤器查找 → 用户 DN + 密码绑定；空密码直接拒绝；每次登录同步姓名、邮箱；不走 MFA（前端无 MFA 步骤） |
+| 钉钉/飞书/国际飞书/企业微信 | `/{p}/token` 用授权码换取 5 分钟、一次性的临时登录票据（独立签名，不能当登录 token 用），前端以 X-DE-TOKEN 调用 `/login/platformLogin/{origin}` 换取正式 token；`/{p}/bind` 绑定当前用户 |
+| OAuth2 | `/oauth2/auth` 返回签名 state（含 `fit2clouddeoauth2`，5 分钟、一次性）；`/oauth2/token` 换取 access_token → userinfo → 临时票据；`authMethod` 1 为 client_secret_jwt；`mapping` 支持 `a.b.c` 路径，可选 `codeKey` |
+| SAML2 | 根路径 `/saml/login`、`/saml/sso`、`/saml/metadata`（`@Controller`，不加 /de2api）；IdP 元数据保存时解析；AuthnRequest 支持 Redirect（查询串签名）与 POST（封装签名）；Response 必须有有效签名并校验 Destination/InResponseTo/Issuer/时间/Audience/Recipient，成功后回跳 `?state=fit2cloud-saml2&saml2Token=…`；不支持加密断言、默认拒绝 IdP 发起的登录（`dataease.ee.sso.saml.allow-idp-initiated`） |
+| OIDC / CAS | 前端跳转 `/oidcbi/`、`/casbi/` 后调用 `platformLogin(2/3)`，身份来源见下 |
+
+### OIDC / CAS 的两种部署方式
+
+1. **APISIX 网关（安装包 enterprise 模式）**：保存或启停 OIDC/CAS 时，后端通过 Admin API（`dataease.apisix-api.domain/key`）维护路由
+   `dataease`（`/*`）、`dataease-oidc`（`/oidcbi/*`，openid-connect 插件，`logout_path=/oidcbi/oidc/logout`）、`dataease-cas`（`/casbi/*`，cas-auth 插件，
+   回调 `/casbi/cas_callback`、登出 `/casbi/cas/logout`），并去掉前缀、注入共享密钥头 `X-DE-GATEWAY-SECRET`。后端只信任携带正确密钥的
+   `X-Userinfo`（Base64 JSON）/ `X-CAS-USER`。网关不可用时只记录警告。用户需通过 APISIX 端口访问整个站点。
+2. **内置网关（无 APISIX，直接访问后端端口）**：`EeSsoGatewayFilter` 处理 `/oidcbi/**`、`/casbi/**`：去掉前缀后交给后续过滤器；页面请求未登录时
+   跳转 IdP（OIDC 授权码 + 可选 PKCE，state/nonce 存签名 Cookie；CAS `/login?service=…/casbi/cas_callback`，`/p3/serviceValidate` 校验 ticket），
+   认证后以签名 Cookie `DE_SSO_SESSION`（Path 限定在前缀下）保存会话；同样处理两个登出地址。OIDC 的 `redirectUri` 必须位于 `/oidcbi/` 下。
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `dataease.ee.sso.gateway-secret` | 由 APISIX key 派生 | 网关注入的共享密钥；使用自建网关（nginx 等）时设置此值并让网关注入 `X-DE-GATEWAY-SECRET` |
+| `dataease.ee.sso.gateway-trust` | `secret` | `any`：信任任何请求的身份头（仅限网关会剥离客户端同名头的部署）；`none`：只用内置网关 |
+| `dataease.ee.sso.native-enabled` | `true` | 是否启用内置网关 |
+| `dataease.ee.sso.apisix.enabled` / `.upstream` | `true` / `dataease:8100` | 是否维护 APISIX 路由及上游地址 |
+| `dataease.ee.sso.trust-all-certificates` | `false` | 调用 IdP / 开放平台时是否信任自签名证书 |
+| `dataease.ee.platform.{dingtalk.oapi,dingtalk.api,lark.api,larksuite.api,wecom.api}` | 官方域名 | 开放平台地址（私有化部署或测试替身） |
+
+### 供其他模块使用
+* `EePlatformMessageService.sendToUsers(origin, uids, message)` / `sendToGroups(origin, groupIds, message)`；`EePlatformMessage.text/markdown/image/file`。
+  每个平台一个 `EePlatformMessageSender` Bean（钉钉：工作通知 + 群机器人 `openConversationId`；飞书：`im/v1/messages`，群为 `chat_id`；企业微信：应用消息 + 应用群聊）。
+* `EeAuthenticationManage.defaultLogin()`：`basic.defaultLogin`（0/1/2/3/9/10）映射为前端需要的 0..5，所选方式未启用时为 0，供 `/sysParameter/defaultLogin` 扩展调用。
+* `@EeExtension("larkManage")`：`getTenantAccessToken()` 返回飞书（未配置时国际飞书）的 tenant_access_token。
