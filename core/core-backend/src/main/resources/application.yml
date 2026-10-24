@@ -14,7 +14,7 @@ spring:
     name: core-backend
   messages:
     encoding: UTF-8
-    basename: i18n/lic,i18n/core,i18n/permissions,i18n/xpack,i18n/sync
+    basename: i18n/lic,i18n/core,i18n/permissions,i18n/xpack,i18n/sync,i18n/ee_settings,i18n/ee_dataperm,i18n/ee_auth,i18n/ee_log,i18n/ee_report,i18n/ee_filling,i18n/ee_sheet,i18n/ee_sync
   main:
     allow-circular-references: true
   cache:
