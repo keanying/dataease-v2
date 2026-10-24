@@ -14,7 +14,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.CodeSource;
-import java.util.Base64;
 import java.util.Enumeration;
 import java.util.Map;
 import java.util.jar.JarEntry;
@@ -74,7 +73,7 @@ public final class PluginJarReader {
         if (info.get("icon") == null) {
             byte[] icon = readBytes(pluginClass, "plugin/" + moduleName + ".svg");
             if (icon != null) {
-                info.put("icon", "data:image/svg+xml;base64," + Base64.getEncoder().encodeToString(icon));
+                info.put("icon", new String(icon, StandardCharsets.UTF_8));
             }
         }
         Object vo = JsonUtil.toJSONString(info);
