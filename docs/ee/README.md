@@ -23,6 +23,14 @@
 | `setting` | 系统参数读写、`perSetting` 扩展（基础设置企业版项、默认登录、外观 UI 列表、导出模式）、外观设置、邮件设置与发送（`EeMailSender`）、MFA/HMAC 设置与 HMAC 校验过滤器、API Key、嵌入式应用与嵌入式 token |
 | `plugin` | 插件管理 |
 | `init` | 初始化与升级数据（版本组 3） |
+| `dataperm` | 系统变量、数据集行权限 / 列权限、数据集权限辅助 |
+| `sso`、`platform` | LDAP / OIDC / CAS / OAuth2 / SAML2 认证，钉钉 / 飞书 / 国际飞书 / 企业微信对接与消息发送 |
+| `log`、`relation`、`webhook` | 操作日志、血缘分析、Webhook 管理与发送（`EeWebhookSender`） |
+| `message` | 消息中心角标（`EeMsgCountProvider`）、`CommunicateApi` 渠道 |
+| `report`、`threshold` | 定时报告、阈值告警，以及两者共用的消息渠道 SPI（`report.notify`） |
+| `datafilling` | 数据填报：表单、数据、Excel 导入导出、填报任务 |
+| `spreadsheet` | 电子表格 |
+| `sync` | 数据同步：数据源、任务、日志、概览 |
 
 ## 2. 关键约定
 
@@ -168,3 +176,18 @@ casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2ap
   每个平台一个 `EePlatformMessageSender` Bean（钉钉：工作通知 + 群机器人 `openConversationId`；飞书：`im/v1/messages`，群为 `chat_id`；企业微信：应用消息 + 应用群聊）。
 * `EeAuthenticationManage.defaultLogin()`：`basic.defaultLogin`（0/1/2/3/9/10）映射为前端需要的 0..5，所选方式未启用时为 0，供 `/sysParameter/defaultLogin` 扩展调用。
 * `@EeExtension("larkManage")`：`getTenantAccessToken()` 返回飞书（未配置时国际飞书）的 tenant_access_token。
+
+## 7. 消息渠道与消息中心
+
+定时报告与阈值告警通过 `io.dataease.ee.report.notify.EeNotifyDispatcher` 发送，每种渠道一个 `EeNotifyChannel` Bean（`type()` 取 `EeNotifyTypes` 常量）：
+
+| 渠道 | 实现 | 说明 |
+| --- | --- | --- |
+| `email` | `EeEmailChannel` → `EeMailSender` | 使用系统设置的邮件服务器；内嵌截图以 `cid:` 引用，Excel / PDF 作为附件 |
+| `wecom` / `dingtalk` / `lark` / `larksuite` | `EePlatformNotifyChannel`（`EePlatformNotifyChannelConfig` 注册） | 个人消息，targets 为已绑定的平台用户 ID；先发 Markdown 正文，再逐个发送图片与文件 |
+| `dingtalk_group` / `lark_group` / `larksuite_group` | 同上 | 群消息，targets 为群 ID |
+| `webhook` | `EeWebhookNotifyChannel` → `EeWebhookSender` | targets 为 Webhook ID，仅发送同组织的 Webhook；模板占位符 `title`、`content`（纯文本）、`html`、`messageId`、`source`、`sourceId` |
+
+平台未配置或未启用时，该渠道记为“不可用”写入任务日志，其他渠道照常发送。新增渠道只需注册一个 `EeNotifyChannel` Bean。
+
+页头消息角标（`/msg-center/count`）为全部 `EeMsgCountProvider` 之和；目前数据填报的待填报任务数由 `DfMsgCountProvider` 提供。
