@@ -241,3 +241,15 @@ Keycloak 作为 IdP 时加密算法固定为 rsa-oaep-mgf1p + aes128-cbc，其�
 `ALL_USERS`、`ALL_TABLES`、`ALL_VIEWS`、`ALL_TAB_COLUMNS`、`ALL_CONSTRAINTS` 等字典视图读取（`DmDictionary`，
 驱动元数据需要 SYSOBJECTS 等系统表权限，普通用户没有）；查询按 Oracle 方言生成 SQL 后在达梦执行，不支持与其他数据源跨源关联。
 前端数据源类型列表（OLTP）中显示“DM”。注意达梦 8 的 `SELECT DISTINCT ... ORDER BY ... DESC` 会忽略 DESC，去重请用 GROUP BY。
+
+## 10. 元数据库与安全存储
+
+* 企业版全部模块已在以下元数据库上实测（安装包 `DE_DB_TYPE` 对应 `templates/jpa/application-*.yml`）：MySQL、PostgreSQL、SQL Server、
+  Oracle（23ai，`DataEaseOracle11gDialect`）、达梦 DM8。Oracle/达梦把空串当作 NULL，系统参数空值只删除不写入。
+* 达梦作为元数据库时，连接用户需要能读取系统字典（驱动的元数据接口依赖 SYSOBJECTS），非 DBA 用户请授予 `SOI`、`VTI` 角色：
+  `GRANT SOI TO <用户>; GRANT VTI TO <用户>;`
+* 敏感信息加密存储（安装级 AES 密钥，与数据源配置相同）：邮件密码、HMAC 密钥（`core_sys_setting`，`ENC:` 前缀）、
+  Webhook / 嵌入式应用 / API Key 密钥（`EeSecretConverter`）、认证与平台配置（`ee_auth_config.config`）、MFA 密钥。历史明文兼容读取。
+  `/sysParameter/singleVal` 不返回密码、密钥类设置项。
+* 登录 token 与嵌入式 token 的注销记录持久化在 `per_token_revoked`，重启后仍有效，多节点每 30 秒同步。
+* `dataease.cors-strict=true` 时嵌入式应用域名的增删立即生效。
