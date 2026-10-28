@@ -96,6 +96,13 @@ public class EeOidcManage {
      * 授权码换取用户声明（userinfo 优先，合并 id_token 声明）
      */
     public JsonNode exchange(XpackOidcVO vo, String code, String nonce, String verifier) {
+        return exchangeTokens(vo, code, nonce, verifier).claims();
+    }
+
+    /**
+     * 授权码换取用户声明与 id_token
+     */
+    public TokenResult exchangeTokens(XpackOidcVO vo, String code, String nonce, String verifier) {
         Discovery discovery = discovery(vo.getDiscovery(), false);
         Map<String, String> form = new LinkedHashMap<>();
         form.put("grant_type", "authorization_code");
@@ -131,7 +138,10 @@ public class EeOidcManage {
         if (claims.isEmpty()) {
             throw new IllegalStateException("OIDC provider returned no user claims");
         }
-        return claims;
+        return new TokenResult(claims, idToken);
+    }
+
+    public record TokenResult(JsonNode claims, String idToken) {
     }
 
     /**
