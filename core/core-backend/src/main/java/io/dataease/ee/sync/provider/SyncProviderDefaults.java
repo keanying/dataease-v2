@@ -56,6 +56,10 @@ public final class SyncProviderDefaults {
         if (value instanceof BigInteger bigInteger) {
             return new BigDecimal(bigInteger);
         }
+        if (value instanceof java.util.UUID uuid) {
+            // Oracle 等驱动不支持绑定 java.util.UUID
+            return uuid.toString();
+        }
         if (value instanceof java.sql.Array || value instanceof Struct) {
             return rs.getString(index);
         }

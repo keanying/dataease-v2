@@ -34,6 +34,18 @@ public class PgSyncProvider extends JdbcSyncProvider {
         return JsonUtil.parseObject(configurationJson, Pg.class);
     }
 
+    /**
+     * 文本参数按 unspecified 发送，由服务端推断类型：写入 JSON/JSONB、UUID 等列时无需显式转换
+     */
+    @Override
+    public Connection open(DatasourceConfiguration configuration) {
+        String url = configuration.getJdbc();
+        if (url != null && !url.toLowerCase(java.util.Locale.ROOT).contains("stringtype=")) {
+            url += (url.contains("?") ? "&" : "?") + "stringtype=unspecified";
+        }
+        return SyncJdbcSupport.connect(configuration.getDriver(), url, configuration.getUsername(), configuration.getPassword());
+    }
+
     @Override
     protected String quotePrefix() {
         return "\"";

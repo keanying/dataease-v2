@@ -361,6 +361,10 @@ public class SyncTaskManage {
         }
         source.setType(sourceDs.getType());
         target.setType(targetDs.getType());
+        if (resolver.provider(sourceDs.getType(), sourceDs.getDatasourceRole()) instanceof io.dataease.ee.sync.provider.SyncRecordSource recordSource) {
+            // 非 JDBC 源端（Elasticsearch）：仅支持按表（索引）抽取，校验查询参数
+            recordSource.validateSource(source);
+        }
         if (SyncConstants.EXTRACT_SQL.equals(source.getTableExtract())) {
             io.dataease.ee.sync.provider.JdbcSyncProvider.checkQuery(source.getQuery());
             source.setTables(null);

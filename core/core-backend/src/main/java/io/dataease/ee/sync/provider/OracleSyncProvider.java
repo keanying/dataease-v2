@@ -74,6 +74,19 @@ public class OracleSyncProvider extends JdbcSyncProvider {
         return Types.VARCHAR;
     }
 
+    /**
+     * TIMESTAMP WITH LOCAL TIME ZONE 按会话时区读出，视为不带时区的时间戳
+     */
+    @Override
+    protected TableFieldDTO buildField(String name, String typeName, int jdbcType, int size, int scale, int displaySize, String remarks) {
+        TableFieldDTO field = super.buildField(name, typeName, jdbcType, size, scale, displaySize, remarks);
+        if (StringUtils.containsIgnoreCase(typeName, "WITH LOCAL TIME ZONE")) {
+            field.setFieldSourceStandardType(io.dataease.extensions.sync.datatype.StandardDataType.TIMESTAMP.name());
+            field.setFieldType(field.getFieldSourceStandardType());
+        }
+        return field;
+    }
+
     @Override
     protected List<String> sinkDataTypes() {
         return TYPES;

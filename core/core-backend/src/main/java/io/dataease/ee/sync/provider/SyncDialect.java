@@ -67,5 +67,19 @@ public interface SyncDialect {
 
     int nullType();
 
+    /**
+     * 写入 NULL 时使用的 JDBC 类型（按目标列类型）；部分驱动（SQL Server）不允许以文本类型的 NULL 写入二进制列
+     */
+    default int nullType(String columnType) {
+        return nullType();
+    }
+
+    /**
+     * 写入前的值转换（如目标端无二进制类型时转为文本）
+     */
+    default Object writeValue(Object value) {
+        return value;
+    }
+
     Object readValue(ResultSet resultSet, int index) throws SQLException;
 }

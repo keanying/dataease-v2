@@ -70,6 +70,28 @@ public class SqlServerSyncProvider extends JdbcSyncProvider {
         return Types.VARCHAR;
     }
 
+    /**
+     * 二进制列的 NULL 须以二进制类型绑定（nvarchar → varbinary 不允许隐式转换）
+     */
+    @Override
+    public int nullType(String columnType) {
+        String type = StringUtils.upperCase(StringUtils.substringBefore(StringUtils.trimToEmpty(columnType), "("));
+        return Set.of("BINARY", "VARBINARY", "IMAGE", "TIMESTAMP", "ROWVERSION").contains(type) ? Types.VARBINARY : nullType();
+    }
+
+    /**
+     * SQL Server 的 TINYINT 为无符号（0~255），按无符号类型映射，避免目标端有符号 TINYINT 溢出
+     */
+    @Override
+    protected TableFieldDTO buildField(String name, String typeName, int jdbcType, int size, int scale, int displaySize, String remarks) {
+        TableFieldDTO field = super.buildField(name, typeName, jdbcType, size, scale, displaySize, remarks);
+        if ("tinyint".equalsIgnoreCase(StringUtils.trimToEmpty(typeName))) {
+            field.setFieldSourceStandardType(io.dataease.extensions.sync.datatype.StandardDataType.TINYINT_UNSIGNED.name());
+            field.setFieldType(field.getFieldSourceStandardType());
+        }
+        return field;
+    }
+
     @Override
     protected List<String> sinkDataTypes() {
         return TYPES;
