@@ -34,7 +34,7 @@ import java.util.*;
  * {@link ProviderFactory}（不需要安装插件包），驱动使用 {@code dataease.path.driver} 目录中的 DmJdbcDriver18.jar：</p>
  * <ul>
  *     <li>连接：{@link DmConfiguration}，连接后按配置的模式执行 {@code SET SCHEMA}；</li>
- *     <li>模式、表（含视图）与字段通过 JDBC 元数据读取；</li>
+ *     <li>模式、表（含视图）与字段通过 ALL_* 数据字典视图读取（{@link DmDictionary}，驱动元数据需要系统表权限）；</li>
  *     <li>查询由核心按 Oracle 方言（Calcite {@link OracleSqlDialect}，OFFSET/FETCH 分页）生成 SQL 后直接在达梦执行；
  *     达梦与其他数据源之间不支持跨源关联（核心 {@code DatasetSQLManage.invalidCrossDs} 已排除 dm）；</li>
  *     <li>每次请求新建连接（不使用连接池）。</li>
@@ -223,11 +223,8 @@ public class DmDatasourceProvider extends DataEaseDatasourcePlugin {
     @Override
     public List<String> getSchema(DatasourceRequest datasourceRequest) {
         List<String> schemas = new ArrayList<>();
-        try (ConnectionObj obj = connectionWithoutSchema(datasourceRequest.getDatasource());
-             ResultSet rs = obj.getConnection().getMetaData().getSchemas()) {
-            while (rs.next()) {
-                schemas.add(rs.getString("TABLE_SCHEM"));
-            }
+        try (ConnectionObj obj = connectionWithoutSchema(datasourceRequest.getDatasource())) {
+            schemas.addAll(DmDictionary.schemas(obj.getConnection()));
         } catch (DEException e) {
             throw e;
         } catch (Exception e) {
@@ -256,16 +253,13 @@ public class DmDatasourceProvider extends DataEaseDatasourcePlugin {
         try (ConnectionObj obj = getConnection(datasource)) {
             Connection connection = obj.getConnection();
             String schema = schemaOf(datasource, connection);
-            try (ResultSet rs = connection.getMetaData().getTables(null, schema, "%", new String[]{"TABLE", "VIEW"})) {
-                while (rs.next()) {
-                    DatasetTableDTO table = new DatasetTableDTO();
-                    table.setDatasourceId(datasource.getId());
-                    table.setType("db");
-                    String name = rs.getString("TABLE_NAME");
-                    table.setTableName(name);
-                    table.setName(StringUtils.defaultIfBlank(rs.getString("REMARKS"), name));
-                    tables.add(table);
-                }
+            for (DmDictionary.Table t : DmDictionary.tables(connection, schema, true)) {
+                DatasetTableDTO table = new DatasetTableDTO();
+                table.setDatasourceId(datasource.getId());
+                table.setType("db");
+                table.setTableName(t.name());
+                table.setName(StringUtils.defaultIfBlank(t.remarks(), t.name()));
+                tables.add(table);
             }
         } catch (DEException e) {
             throw e;
@@ -289,36 +283,25 @@ public class DmDatasourceProvider extends DataEaseDatasourcePlugin {
             }
             String schema = schemaOf(datasource, connection);
             String table = datasourceRequest.getTable();
-            DatabaseMetaData meta = connection.getMetaData();
-            Set<String> pks = new HashSet<>();
-            try (ResultSet rs = meta.getPrimaryKeys(null, schema, table)) {
-                while (rs.next()) {
-                    pks.add(rs.getString("COLUMN_NAME"));
+            Set<String> pks = DmDictionary.primaryKeys(connection, schema, table);
+            for (DmDictionary.Column c : DmDictionary.columns(connection, schema, table)) {
+                TableField field = new TableField();
+                String name = c.name();
+                field.setOriginName(name);
+                field.setName(StringUtils.defaultIfBlank(c.remarks(), name));
+                field.setType(c.typeName());
+                field.setFieldType(c.typeName());
+                field.setSize(c.size());
+                if (c.scale() != null) {
+                    field.setScale(c.scale());
                 }
-            }
-            try (ResultSet rs = meta.getColumns(null, schema, table, "%")) {
-                while (rs.next()) {
-                    TableField field = new TableField();
-                    String name = rs.getString("COLUMN_NAME");
-                    String type = StringUtils.upperCase(rs.getString("TYPE_NAME"));
-                    field.setOriginName(name);
-                    field.setName(StringUtils.defaultIfBlank(rs.getString("REMARKS"), name));
-                    field.setType(type);
-                    field.setFieldType(type);
-                    field.setSize(rs.getLong("COLUMN_SIZE"));
-                    int deType = deType(type);
-                    field.setDeType(deType);
-                    field.setDeExtractType(deType);
-                    field.setPrimary(pks.contains(name));
-                    field.setPrimaryKey(pks.contains(name));
-                    field.setTypeNumber(rs.getInt("DATA_TYPE"));
-                    try {
-                        field.setAutoIncrement("YES".equalsIgnoreCase(rs.getString("IS_AUTOINCREMENT")));
-                    } catch (SQLException ignore) {
-                        // 驱动不提供该列
-                    }
-                    fields.add(field);
-                }
+                int deType = deType(c.typeName());
+                field.setDeType(deType);
+                field.setDeExtractType(deType);
+                field.setPrimary(pks.contains(name));
+                field.setPrimaryKey(pks.contains(name));
+                field.setTypeNumber(DmDictionary.jdbcType(c.typeName()));
+                fields.add(field);
             }
         } catch (DEException e) {
             throw e;
@@ -500,7 +483,7 @@ public class DmDatasourceProvider extends DataEaseDatasourcePlugin {
     /**
      * 达梦字段类型 → DataEase 字段类型（0 文本、1 时间、2 整数、3 小数、4 布尔、5 地理，二进制按文本）
      */
-    static int deType(String typeName) {
+    public static int deType(String typeName) {
         String type = StringUtils.upperCase(StringUtils.trimToEmpty(typeName));
         int paren = type.indexOf('(');
         if (paren > 0) {

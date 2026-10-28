@@ -1,5 +1,6 @@
 package io.dataease.ee.datafilling.jdbc;
 
+import io.dataease.ee.datasource.dm.DmDictionary;
 import io.dataease.exception.DEException;
 import io.dataease.extensions.datafilling.provider.ExtDDLProvider;
 import io.dataease.extensions.datasource.dto.ConnectionObj;
@@ -382,6 +383,11 @@ public class DfSession implements AutoCloseable {
     public List<String> tables() {
         List<String> result = new ArrayList<>();
         try {
+            if (dialect.isDm()) {
+                // 达梦驱动元数据需要查询系统表的权限，改用 ALL_* 数据字典视图
+                DmDictionary.tables(connection, schema(), false).forEach(t -> result.add(t.name()));
+                return result;
+            }
             DatabaseMetaData meta = connection.getMetaData();
             try (ResultSet rs = meta.getTables(connection.getCatalog(), schema(), "%", new String[]{"TABLE"})) {
                 while (rs.next()) {
@@ -405,6 +411,23 @@ public class DfSession implements AutoCloseable {
         List<TableField> result = new ArrayList<>();
         String realTable = tables().stream().filter(t -> StringUtils.equalsIgnoreCase(t, table)).findFirst().orElse(table);
         try {
+            if (dialect.isDm()) {
+                Set<String> pks = DmDictionary.primaryKeys(connection, schema(), realTable);
+                for (DmDictionary.Column c : DmDictionary.columns(connection, schema(), realTable)) {
+                    TableField field = new TableField();
+                    field.setOriginName(c.name());
+                    field.setName(StringUtils.defaultIfBlank(c.remarks(), c.name()));
+                    field.setType(c.typeName());
+                    field.setFieldType(c.typeName());
+                    field.setSize(c.size());
+                    field.setDeType(deType(DmDictionary.jdbcType(c.typeName())));
+                    field.setDeExtractType(field.getDeType());
+                    field.setPrimary(pks.contains(c.name()));
+                    field.setPrimaryKey(pks.contains(c.name()));
+                    result.add(field);
+                }
+                return result;
+            }
             DatabaseMetaData meta = connection.getMetaData();
             Set<String> pks = new HashSet<>();
             try (ResultSet rs = meta.getPrimaryKeys(connection.getCatalog(), schema(), realTable)) {

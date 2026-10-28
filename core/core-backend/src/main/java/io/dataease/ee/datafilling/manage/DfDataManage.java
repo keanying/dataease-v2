@@ -674,11 +674,12 @@ public class DfDataManage {
             List<Object> params = new ArrayList<>();
             Map<String, Integer> types = session.columnTypes(table);
             String where = treeWhere(session, types, tree, params);
-            // CLOB 不能 DISTINCT / ORDER BY，Oracle/达梦取前 1000 个字符
+            // CLOB 不能分组 / ORDER BY，Oracle/达梦取前 1000 个字符；
+            // 用 GROUP BY 去重而非 DISTINCT：达梦 8 的 SELECT DISTINCT ... ORDER BY ... DESC 会忽略 DESC
             String col = session.dialect().sortable(session.q(column), types.get(column.toLowerCase()));
-            String sql = "SELECT DISTINCT " + col + " FROM " + session.table(table) + " WHERE " + session.q(column) + " IS NOT NULL"
+            String sql = "SELECT " + col + " FROM " + session.table(table) + " WHERE " + session.q(column) + " IS NOT NULL"
                     + (StringUtils.isBlank(where) ? "" : " AND (" + where + ")")
-                    + " ORDER BY " + col + (StringUtils.equalsIgnoreCase(order, "desc") ? " DESC" : " ASC");
+                    + " GROUP BY " + col + " ORDER BY " + col + (StringUtils.equalsIgnoreCase(order, "desc") ? " DESC" : " ASC");
             for (List<String> row : session.queryStrings(sql, params, OPTION_LIMIT)) {
                 String v = row.getFirst();
                 if (v != null) {

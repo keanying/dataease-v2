@@ -99,6 +99,10 @@ public class DfDialect {
         return kind == Kind.ORACLE;
     }
 
+    public boolean isDm() {
+        return kind == Kind.DM;
+    }
+
     public boolean isSqlServer() {
         return kind == Kind.SQLSERVER;
     }
