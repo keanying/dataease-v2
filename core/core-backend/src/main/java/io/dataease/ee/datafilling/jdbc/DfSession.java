@@ -533,6 +533,13 @@ public class DfSession implements AutoCloseable {
     }
 
     /**
+     * 指定标识符长度上限（配置 {@code dataease.ee.data-filling.max-identifier-length}），覆盖自动判断
+     */
+    public void setMaxIdentifierLength(int limit) {
+        this.maxIdentifierLength = limit;
+    }
+
+    /**
      * 标识符是否超出目标库长度限制
      */
     public boolean identifierTooLong(String name) {

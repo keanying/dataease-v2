@@ -19,6 +19,7 @@ import io.dataease.utils.BeanUtils;
 import io.dataease.utils.LogUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
@@ -40,6 +41,12 @@ public class DfJdbcSupport {
     private final Map<String, ExtDDLProvider> builtin;
 
     private final SqlServerExtDDLProvider sqlServerProvider;
+
+    /**
+     * 表名/列名/索引名最大长度（0 表示按驱动与数据库版本自动判断）。例如 Oracle 12.2+ 但 COMPATIBLE 低于 12.2 时设为 30
+     */
+    @Value("${dataease.ee.data-filling.max-identifier-length:0}")
+    private int maxIdentifierLength;
 
     public DfJdbcSupport(@Lazy DataSourceManage dataSourceManage,
                          @Qualifier("mysqlExtDDLProvider") ExtDDLProvider mysqlProvider,
@@ -108,6 +115,9 @@ public class DfJdbcSupport {
             DEException.throwException(Translator.get("ee_df_datasource_connect_failed"));
         }
         DfSession session = new DfSession(obj, ds.getType());
+        if (maxIdentifierLength > 0) {
+            session.setMaxIdentifierLength(maxIdentifierLength);
+        }
         try {
             initSession(session, ds);
         } catch (RuntimeException e) {
