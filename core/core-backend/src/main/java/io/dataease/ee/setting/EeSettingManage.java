@@ -70,6 +70,10 @@ public class EeSettingManage {
     public void put(String key, String value, String type, Integer sort) {
         repository.deleteByPkey(key);
         repository.flush();
+        if (StringUtils.isEmpty(value)) {
+            // 空值不落库（Oracle/达梦把空串当作 NULL，pval 非空约束会失败）；读取时空值与缺省等价
+            return;
+        }
         CoreSysSetting setting = new CoreSysSetting();
         setting.setId(IDUtils.snowID());
         setting.setPkey(key);

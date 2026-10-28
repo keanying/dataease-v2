@@ -334,6 +334,8 @@ public class SysParameterManage {
             sysSettings.forEach(sysSetting -> {
                 coreSysSettingRepository.deleteByPkey(sysSetting.getPkey());
             });
+            // 空值只删除不写入：Oracle/达梦把空串当作 NULL，会违反 pval 非空约束
+            sysSettings = sysSettings.stream().filter(sysSetting -> StringUtils.isNotEmpty(sysSetting.getPval())).collect(Collectors.toList());
 
             int batchSize = 1000;
             for (int i = 0; i < sysSettings.size(); i += batchSize) {
