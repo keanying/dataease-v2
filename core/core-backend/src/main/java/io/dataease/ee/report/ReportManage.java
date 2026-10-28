@@ -291,6 +291,79 @@ public class ReportManage {
                 .set(i.endTime, System.currentTimeMillis()).where(i.execStatus.eq(ReportConstants.EXEC_RUNNING)).execute();
     }
 
+    /**
+     * 停止资源（仪表板/数据大屏）已被删除的报告任务：移除定时与重试调度、标记为已停止，并写一条失败的执行记录说明原因。
+     * <p>由删除仪表板/大屏的扩展（{@code VisualizationResourceTreeExtension.delete}）调用，执行报告时发现资源不存在也会调用。</p>
+     *
+     * @return 停止的任务数
+     */
+    public int stopOrphans() {
+        QXpackReportTask t = QXpackReportTask.xpackReportTask;
+        List<XpackReportTask> tasks = queryFactory.selectFrom(t).where(t.status.ne(ReportConstants.STATUS_STOPPED)).fetch();
+        Map<Long, Boolean> exists = new HashMap<>();
+        int count = 0;
+        for (XpackReportTask task : tasks) {
+            Long rid = task.getRid();
+            boolean alive = rid != null && exists.computeIfAbsent(rid, this::visualizationExists);
+            if (!alive) {
+                stopForDeletedResource(task, true);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private boolean visualizationExists(Long id) {
+        io.dataease.dao.auto.entity.QDataVisualizationInfo v = io.dataease.dao.auto.entity.QDataVisualizationInfo.dataVisualizationInfo;
+        Long found = queryFactory.select(v.id).from(v)
+                .where(v.id.eq(id), v.deleteFlag.isNull().or(v.deleteFlag.eq(false))).fetchFirst();
+        return found != null;
+    }
+
+    /**
+     * 资源已删除：停止任务；log 为 true 时写一条执行记录说明原因（执行报告时发现的由该次执行记录说明）
+     */
+    public void stopForDeletedResource(XpackReportTask task, boolean log) {
+        if (task == null || Objects.equals(task.getStatus(), ReportConstants.STATUS_STOPPED)) {
+            return;
+        }
+        try {
+            deTaskExecutor.removeTask(task.getId(), false);
+            deTaskExecutor.removeRetryTask(task.getId());
+        } catch (Exception e) {
+            LogUtil.warn("unschedule report task " + task.getId() + " failed: " + e.getMessage());
+        }
+        java.util.Locale origin = org.springframework.context.i18n.LocaleContextHolder.getLocale();
+        String msg;
+        try {
+            ReportConstants.applyLocale(task.getCreator());
+            msg = Translator.get("ee_report_stopped_resource_deleted");
+        } finally {
+            org.springframework.context.i18n.LocaleContextHolder.setLocale(origin);
+        }
+        long now = System.currentTimeMillis();
+        transactionTemplate.executeWithoutResult(s -> {
+            QXpackReportTask t = QXpackReportTask.xpackReportTask;
+            queryFactory.update(t).set(t.status, ReportConstants.STATUS_STOPPED).where(t.id.eq(task.getId())).execute();
+            if (!log) {
+                return;
+            }
+            queryFactory.update(t).set(t.lastExecStatus, ReportConstants.EXEC_FAILED).set(t.lastExecTime, now)
+                    .where(t.id.eq(task.getId())).execute();
+            XpackReportInstance instance = new XpackReportInstance();
+            instance.setId(IDUtils.snowID());
+            instance.setTaskId(task.getId());
+            instance.setStartTime(now);
+            instance.setEndTime(now);
+            instance.setExecStatus(ReportConstants.EXEC_FAILED);
+            instance.setTriggerType(ReportConstants.TRIGGER_SCHEDULE);
+            instance.setOid(task.getOid());
+            instance.setMsg(msg);
+            instanceRepository.save(instance);
+        });
+        LogUtil.info("report task " + task.getId() + " stopped: visualization " + task.getRid() + " was deleted");
+    }
+
     public void updateStatus(Long taskId, int status) {
         QXpackReportTask t = QXpackReportTask.xpackReportTask;
         transactionTemplate.executeWithoutResult(s -> queryFactory.update(t).set(t.status, status).where(t.id.eq(taskId)).execute());
