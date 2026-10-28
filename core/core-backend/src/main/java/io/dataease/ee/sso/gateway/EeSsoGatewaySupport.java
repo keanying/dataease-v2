@@ -23,6 +23,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Date;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -47,6 +48,8 @@ public class EeSsoGatewaySupport {
     private static final long CONFIG_TTL = 10_000L;
 
     private static final long STATE_TTL = 10 * 60 * 1000L;
+
+    private static final int MAX_ID_TOKEN_IN_COOKIE = 2400;
 
     @Value("${dataease.ee.sso.gateway-secret:}")
     private String gatewaySecret;
@@ -143,13 +146,46 @@ public class EeSsoGatewaySupport {
             return claims == null ? null : oidcManage.identity(config(EeSsoConstants.OIDC, XpackOidcVO.class), claims);
         }
         if (origin == EeConstants.ORIGIN_CAS) {
-            String user = StringUtils.trimToNull(request.getHeader(AuthConstant.CAS_X_USER));
+            String user = StringUtils.trimToNull(utf8Header(request.getHeader(AuthConstant.CAS_X_USER)));
             if (user == null || !trustedGateway(request)) {
                 return null;
             }
             return casManage.identity(user, Map.of());
         }
         return null;
+    }
+
+    /**
+     * 网关以原始 UTF-8 字节传递请求头，容器按 ISO-8859-1 解码；能按 UTF-8 正确还原时还原
+     */
+    static String utf8Header(String value) {
+        if (value == null || value.chars().allMatch(c -> c < 0x80)) {
+            return value;
+        }
+        if (value.chars().anyMatch(c -> c > 0xff)) {
+            return value;
+        }
+        byte[] bytes = value.getBytes(StandardCharsets.ISO_8859_1);
+        try {
+            return StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+        } catch (java.nio.charset.CharacterCodingException e) {
+            return value;
+        }
+    }
+
+    /**
+     * 内置网关会话中保存的 OIDC id_token（登出时作为 id_token_hint）
+     */
+    public String sessionIdToken(HttpServletRequest request) {
+        String value = cookie(request, SESSION_COOKIE);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return JWT.require(algorithm("session")).build().verify(value).getClaim("idt").asString();
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public ExternalIdentity fromSession(int origin, HttpServletRequest request) {
@@ -167,12 +203,22 @@ public class EeSsoGatewaySupport {
     }
 
     public void writeSession(HttpServletRequest request, HttpServletResponse response, String prefix, ExternalIdentity identity) {
+        writeSession(request, response, prefix, identity, null);
+    }
+
+    /**
+     * @param idToken OIDC id_token，登出时作为 id_token_hint（过长时不保存，避免 Cookie 超过浏览器限制）
+     */
+    public void writeSession(HttpServletRequest request, HttpServletResponse response, String prefix, ExternalIdentity identity, String idToken) {
         long now = System.currentTimeMillis();
-        String value = JWT.create().withClaim("origin", identity.origin()).withSubject(identity.sub())
+        JWTCreator.Builder builder = JWT.create().withClaim("origin", identity.origin()).withSubject(identity.sub())
                 .withClaim("account", identity.account()).withClaim("name", identity.name())
                 .withClaim("email", identity.email()).withClaim("phone", identity.phone())
-                .withIssuedAt(new Date(now)).withExpiresAt(new Date(now + loginTimeout * 60_000L))
-                .sign(algorithm("session"));
+                .withIssuedAt(new Date(now)).withExpiresAt(new Date(now + loginTimeout * 60_000L));
+        if (idToken != null && idToken.length() <= MAX_ID_TOKEN_IN_COOKIE) {
+            builder.withClaim("idt", idToken);
+        }
+        String value = builder.sign(algorithm("session"));
         addCookie(request, response, SESSION_COOKIE, value, prefix, (int) (loginTimeout * 60));
     }
 

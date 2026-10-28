@@ -30,7 +30,12 @@ import java.util.zip.DeflaterOutputStream;
  * SAML 2.0 SP：解析 IdP 元数据、生成 SP 元数据、发起 AuthnRequest（HTTP-Redirect / HTTP-POST）、校验 ACS 收到的 Response。
  *
  * <p>Response 必须带有效签名（Response 或 Assertion 至少一处，开启 wantAssertionsSigned 时须 Assertion 签名或整个 Response 签名），
- * 并校验 Destination、InResponseTo、Issuer、有效期、Audience 与 Recipient。暂不支持加密断言。</p>
+ * 并校验 Destination、InResponseTo、Issuer、有效期、Audience 与 Recipient。支持加密断言（以 SP 私钥解密，见 {@link EeSamlDecryptor}）。</p>
+ *
+ * <p>配置项：{@code dataease.ee.sso.saml.authn-request-binding}（auto / redirect / post，auto 时优先 Redirect）、
+ * {@code dataease.ee.sso.saml.allow-sha1}（是否接受 SHA-1 签名，默认 false）、
+ * {@code dataease.ee.sso.saml.require-encrypted-assertion}（是否要求断言加密，默认 false）、
+ * {@code dataease.ee.sso.saml.allow-idp-initiated}（是否接受 IdP 发起的登录，默认 false）。</p>
  */
 @Component
 public class EeSaml2Manage {
@@ -53,6 +58,15 @@ public class EeSaml2Manage {
 
     @Value("${dataease.ee.sso.saml.allow-idp-initiated:false}")
     private boolean allowIdpInitiated;
+
+    @Value("${dataease.ee.sso.saml.allow-sha1:false}")
+    private boolean allowSha1;
+
+    @Value("${dataease.ee.sso.saml.require-encrypted-assertion:false}")
+    private boolean requireEncryptedAssertion;
+
+    @Value("${dataease.ee.sso.saml.authn-request-binding:auto}")
+    private String authnRequestBinding;
 
     private final EeAuthConfigManage configManage;
 
@@ -96,6 +110,8 @@ public class EeSaml2Manage {
         config.setIdpSsoUrl(metadata.ssoUrl);
         config.setIdpLogoutUrl(metadata.logoutUrl);
         config.setIdpSsoBinding(metadata.ssoBinding);
+        config.setIdpSsoRedirectUrl(metadata.redirectUrl);
+        config.setIdpSsoPostUrl(metadata.postUrl);
         config.setIdpCertificates(metadata.certificates);
         if (config.getAssertionValidityTime() <= 0) {
             config.setAssertionValidityTime(300);
@@ -127,15 +143,20 @@ public class EeSaml2Manage {
         NodeList sso = idp.getElementsByTagNameNS(NS_METADATA, "SingleSignOnService");
         for (int i = 0; i < sso.getLength(); i++) {
             Element item = (Element) sso.item(i);
-            if (BINDING_REDIRECT.equals(item.getAttribute("Binding"))) {
-                metadata.ssoUrl = item.getAttribute("Location");
-                metadata.ssoBinding = BINDING_REDIRECT;
-                break;
+            String location = StringUtils.trimToNull(item.getAttribute("Location"));
+            if (BINDING_REDIRECT.equals(item.getAttribute("Binding")) && metadata.redirectUrl == null) {
+                metadata.redirectUrl = location;
             }
-            if (BINDING_POST.equals(item.getAttribute("Binding")) && metadata.ssoUrl == null) {
-                metadata.ssoUrl = item.getAttribute("Location");
-                metadata.ssoBinding = BINDING_POST;
+            if (BINDING_POST.equals(item.getAttribute("Binding")) && metadata.postUrl == null) {
+                metadata.postUrl = location;
             }
+        }
+        if (metadata.redirectUrl != null) {
+            metadata.ssoUrl = metadata.redirectUrl;
+            metadata.ssoBinding = BINDING_REDIRECT;
+        } else if (metadata.postUrl != null) {
+            metadata.ssoUrl = metadata.postUrl;
+            metadata.ssoBinding = BINDING_POST;
         }
         NodeList slo = idp.getElementsByTagNameNS(NS_METADATA, "SingleLogoutService");
         if (slo.getLength() > 0) {
@@ -190,9 +211,12 @@ public class EeSaml2Manage {
         if (cert != null) {
             try {
                 String encoded = Base64.getEncoder().encodeToString(cert.getEncoded());
-                xml.append("<md:KeyDescriptor use=\"signing\"><ds:KeyInfo xmlns:ds=\"").append(NS_DSIG)
-                        .append("\"><ds:X509Data><ds:X509Certificate>").append(encoded)
-                        .append("</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>");
+                // 同一密钥对用于 AuthnRequest 签名与断言解密
+                for (String use : new String[]{"signing", "encryption"}) {
+                    xml.append("<md:KeyDescriptor use=\"").append(use).append("\"><ds:KeyInfo xmlns:ds=\"").append(NS_DSIG)
+                            .append("\"><ds:X509Data><ds:X509Certificate>").append(encoded)
+                            .append("</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor>");
+                }
             } catch (Exception ignored) {
                 // 忽略无法编码的证书
             }
@@ -209,23 +233,26 @@ public class EeSaml2Manage {
      */
     public LoginRequest login() {
         EeSaml2Config config = active();
+        String[] target = ssoTarget(config);
+        String ssoUrl = target[0];
+        boolean post = BINDING_POST.equals(target[1]);
         String id = "_" + EeSsoKeys.randomHex(20);
         ttlStore.put(EeSsoConstants.CACHE_SAML_REQUEST, id, "1", REQUEST_TTL_MINUTES);
         String xml = "<samlp:AuthnRequest xmlns:samlp=\"" + NS_PROTOCOL + "\" xmlns:saml=\"" + NS_ASSERTION + "\" ID=\"" + id
-                + "\" Version=\"2.0\" IssueInstant=\"" + Instant.now().toString() + "\" Destination=\"" + EeXml.escape(config.getIdpSsoUrl())
+                + "\" Version=\"2.0\" IssueInstant=\"" + Instant.now().toString() + "\" Destination=\"" + EeXml.escape(ssoUrl)
                 + "\" ProtocolBinding=\"" + BINDING_POST + "\" AssertionConsumerServiceURL=\"" + EeXml.escape(config.getSpAcs()) + "\">"
                 + "<saml:Issuer>" + EeXml.escape(config.getSpEntityId()) + "</saml:Issuer>"
                 + "<samlp:NameIDPolicy Format=\"urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified\" AllowCreate=\"true\"/>"
                 + "</samlp:AuthnRequest>";
         String relayState = "saml2";
         PrivateKey key = config.isWantAuthnRequestsSigned() ? EeSamlCrypto.privateKey(config.getPrivateKey()) : null;
-        if (EeSaml2Manage.BINDING_POST.equals(config.getIdpSsoBinding())) {
+        if (post) {
             if (key != null) {
                 xml = EeSamlSigner.signEnveloped(xml, id, key, EeSamlCrypto.certificate(config.getCertificate()));
             }
             String encoded = Base64.getEncoder().encodeToString(xml.getBytes(StandardCharsets.UTF_8));
             String html = "<!DOCTYPE html><html><head><meta charset=\"UTF-8\"></head><body onload=\"document.forms[0].submit()\">"
-                    + "<form method=\"post\" action=\"" + EeXml.escape(config.getIdpSsoUrl()) + "\">"
+                    + "<form method=\"post\" action=\"" + EeXml.escape(ssoUrl) + "\">"
                     + "<input type=\"hidden\" name=\"SAMLRequest\" value=\"" + encoded + "\"/>"
                     + "<input type=\"hidden\" name=\"RelayState\" value=\"" + relayState + "\"/>"
                     + "<noscript><button type=\"submit\">Continue</button></noscript></form></body></html>";
@@ -236,8 +263,31 @@ public class EeSaml2Manage {
             query += "&SigAlg=" + EeHttp.encode(EeSamlCrypto.SIG_ALG_RSA_SHA256);
             query += "&Signature=" + EeHttp.encode(Base64.getEncoder().encodeToString(EeSamlCrypto.signRsaSha256(key, query)));
         }
-        String url = config.getIdpSsoUrl() + (config.getIdpSsoUrl().contains("?") ? "&" : "?") + query;
+        String url = ssoUrl + (ssoUrl.contains("?") ? "&" : "?") + query;
         return new LoginRequest(url, null);
+    }
+
+    /**
+     * 选择 AuthnRequest 的绑定与地址：按 authn-request-binding 配置，IdP 不支持时回退到另一种
+     *
+     * @return {地址, 绑定}
+     */
+    String[] ssoTarget(EeSaml2Config config) {
+        String redirect = config.getIdpSsoRedirectUrl();
+        String post = config.getIdpSsoPostUrl();
+        if (redirect == null && post == null) {
+            // 早期保存的配置只有一个地址
+            if (BINDING_POST.equals(config.getIdpSsoBinding())) {
+                post = config.getIdpSsoUrl();
+            } else {
+                redirect = config.getIdpSsoUrl();
+            }
+        }
+        boolean preferPost = StringUtils.equalsIgnoreCase(StringUtils.trim(authnRequestBinding), "post");
+        if ((preferPost && post != null) || redirect == null) {
+            return new String[]{post, BINDING_POST};
+        }
+        return new String[]{redirect, BINDING_REDIRECT};
     }
 
     /**
@@ -279,26 +329,36 @@ public class EeSaml2Manage {
         if (issuer != null && !config.getIdpEntityId().equals(issuer.getTextContent().trim())) {
             throw new IllegalStateException("SAML Issuer mismatch");
         }
-        if (child(response, NS_ASSERTION, "EncryptedAssertion") != null) {
-            throw new IllegalStateException("encrypted assertion is not supported");
-        }
-        List<Element> assertions = children(response, NS_ASSERTION, "Assertion");
-        if (assertions.size() != 1) {
-            throw new IllegalStateException("SAML Response must contain exactly one Assertion");
-        }
-        Element assertion = assertions.get(0);
         List<X509Certificate> certs = new ArrayList<>();
         for (String c : config.getIdpCertificates() == null ? List.<String>of() : config.getIdpCertificates()) {
             certs.add(EeSamlCrypto.certificate(c));
         }
+        // Response 签名覆盖的是加密后的内容，须在解密前校验
         response.setIdAttributeNS(null, "ID", true);
-        assertion.setIdAttributeNS(null, "ID", true);
         Element responseSig = EeSamlCrypto.directSignature(response);
+        boolean responseSigned = responseSig != null && EeSamlCrypto.verify(responseSig, response.getAttribute("ID"), certs, allowSha1);
+        if (responseSig != null && !responseSigned) {
+            throw invalidSignature(responseSig);
+        }
+        List<Element> encrypted = children(response, NS_ASSERTION, "EncryptedAssertion");
+        List<Element> assertions = children(response, NS_ASSERTION, "Assertion");
+        if (encrypted.size() + assertions.size() != 1) {
+            throw new IllegalStateException("SAML Response must contain exactly one Assertion");
+        }
+        Element assertion;
+        if (!encrypted.isEmpty()) {
+            assertion = EeSamlDecryptor.decryptAssertion(encrypted.get(0), EeSamlCrypto.privateKey(config.getPrivateKey()));
+            response.replaceChild(assertion, encrypted.get(0));
+        } else if (requireEncryptedAssertion) {
+            throw new IllegalStateException("SAML Assertion must be encrypted");
+        } else {
+            assertion = assertions.get(0);
+        }
+        assertion.setIdAttributeNS(null, "ID", true);
         Element assertionSig = EeSamlCrypto.directSignature(assertion);
-        boolean responseSigned = responseSig != null && EeSamlCrypto.verify(responseSig, response.getAttribute("ID"), certs);
-        boolean assertionSigned = assertionSig != null && EeSamlCrypto.verify(assertionSig, assertion.getAttribute("ID"), certs);
-        if ((responseSig != null && !responseSigned) || (assertionSig != null && !assertionSigned)) {
-            throw new IllegalStateException("SAML signature invalid");
+        boolean assertionSigned = assertionSig != null && EeSamlCrypto.verify(assertionSig, assertion.getAttribute("ID"), certs, allowSha1);
+        if (assertionSig != null && !assertionSigned) {
+            throw invalidSignature(assertionSig);
         }
         if (!responseSigned && !assertionSigned) {
             throw new IllegalStateException("SAML Response is not signed");
@@ -391,6 +451,14 @@ public class EeSaml2Manage {
         return new ExternalIdentity(EeConstants.ORIGIN_SAML, account, account, name, email, phone);
     }
 
+    private IllegalStateException invalidSignature(Element signature) {
+        if (!allowSha1 && EeSamlCrypto.usesSha1(signature)) {
+            return new IllegalStateException("SAML signature uses SHA-1, which is rejected by default "
+                    + "(configure the IdP to sign with RSA-SHA256, or set dataease.ee.sso.saml.allow-sha1=true)");
+        }
+        return new IllegalStateException("SAML signature invalid");
+    }
+
     private void checkInResponseTo(String inResponseTo) {
         if (StringUtils.isBlank(inResponseTo)) {
             if (!allowIdpInitiated) {
@@ -465,6 +533,8 @@ public class EeSaml2Manage {
         String entityId;
         String ssoUrl;
         String ssoBinding;
+        String redirectUrl;
+        String postUrl;
         String logoutUrl;
         List<String> certificates = new ArrayList<>();
     }
@@ -476,6 +546,8 @@ public class EeSaml2Manage {
     @Setter
     public static class EeSaml2Config extends XpackSaml2VO {
         private String idpSsoBinding;
+        private String idpSsoRedirectUrl;
+        private String idpSsoPostUrl;
         private List<String> idpCertificates;
     }
 }

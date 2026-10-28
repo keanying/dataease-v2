@@ -5,6 +5,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 
 import javax.xml.crypto.dsig.Reference;
+import javax.xml.crypto.dsig.Transform;
 import javax.xml.crypto.dsig.XMLSignature;
 import javax.xml.crypto.dsig.XMLSignatureFactory;
 import javax.xml.crypto.dsig.dom.DOMValidateContext;
@@ -15,11 +16,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.Signature;
+import java.security.interfaces.RSAKey;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 import java.util.List;
+import java.util.Set;
 
 /**
  * SAML 所需的密钥与签名工具（仅使用 JDK 实现）
@@ -27,6 +30,33 @@ import java.util.List;
 public final class EeSamlCrypto {
 
     public static final String SIG_ALG_RSA_SHA256 = "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256";
+
+    public static final String SIG_ALG_RSA_SHA1 = "http://www.w3.org/2000/09/xmldsig#rsa-sha1";
+
+    public static final String DIGEST_SHA1 = "http://www.w3.org/2000/09/xmldsig#sha1";
+
+    private static final Set<String> SIGNATURE_ALGS = Set.of(SIG_ALG_RSA_SHA1, SIG_ALG_RSA_SHA256,
+            "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384", "http://www.w3.org/2001/04/xmldsig-more#rsa-sha512",
+            "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha256", "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha384",
+            "http://www.w3.org/2001/04/xmldsig-more#ecdsa-sha512");
+
+    private static final Set<String> DIGEST_ALGS = Set.of(DIGEST_SHA1, "http://www.w3.org/2001/04/xmlenc#sha256",
+            "http://www.w3.org/2001/04/xmldsig-more#sha384", "http://www.w3.org/2001/04/xmlenc#sha512");
+
+    private static final Set<String> C14N_ALGS = Set.of("http://www.w3.org/2001/10/xml-exc-c14n#",
+            "http://www.w3.org/2001/10/xml-exc-c14n#WithComments", "http://www.w3.org/TR/2001/REC-xml-c14n-20010315",
+            "http://www.w3.org/TR/2001/REC-xml-c14n-20010315#WithComments", "http://www.w3.org/2006/12/xml-c14n11",
+            "http://www.w3.org/2006/12/xml-c14n11#WithComments");
+
+    private static final Set<String> TRANSFORMS;
+
+    static {
+        Set<String> transforms = new java.util.HashSet<>(C14N_ALGS);
+        transforms.add("http://www.w3.org/2000/09/xmldsig#enveloped-signature");
+        TRANSFORMS = Set.copyOf(transforms);
+    }
+
+    private static final String SECURE_VALIDATION = "org.jcp.xml.dsig.secureValidation";
 
     private EeSamlCrypto() {
     }
@@ -103,22 +133,63 @@ public final class EeSamlCrypto {
     }
 
     /**
-     * 校验 XML 签名：签名须恰好引用 {@code #id}，并能由任一 IdP 证书验证通过
+     * 校验 XML 签名：签名须恰好引用 {@code #id}，并能由任一 IdP 证书验证通过（不接受 SHA-1）
      */
     public static boolean verify(Element signature, String id, List<X509Certificate> certificates) {
+        return verify(signature, id, certificates, false);
+    }
+
+    /**
+     * 校验 XML 签名：签名须恰好引用 {@code #id}，变换只允许 enveloped-signature 与 C14N，并能由任一 IdP 证书验证通过。
+     *
+     * <p>JDK 的安全校验模式拒绝 SHA-1 签名与摘要；{@code allowSha1} 为 true 且签名使用 SHA-1 时关闭安全校验模式，
+     * 由本方法自行限制算法、引用与变换（仍拒绝 XSLT / XPath 等变换和 1024 位以下的 RSA 密钥）。</p>
+     */
+    public static boolean verify(Element signature, String id, List<X509Certificate> certificates, boolean allowSha1) {
         if (signature == null || StringUtils.isBlank(id) || certificates == null || certificates.isEmpty()) {
+            return false;
+        }
+        if (countId(signature.getOwnerDocument().getDocumentElement(), id) != 1) {
+            // 重复 ID（签名包装攻击）
             return false;
         }
         XMLSignatureFactory factory = XMLSignatureFactory.getInstance("DOM");
         for (X509Certificate certificate : certificates) {
             try {
-                DOMValidateContext context = new DOMValidateContext(certificate.getPublicKey(), signature);
-                context.setProperty("org.jcp.xml.dsig.secureValidation", Boolean.TRUE);
-                XMLSignature xmlSignature = factory.unmarshalXMLSignature(context);
-                List<?> references = xmlSignature.getSignedInfo().getReferences();
+                // 先以非安全模式解析以检查算法（安全模式会直接拒绝 SHA-1），检查通过后再按需开启安全模式校验
+                DOMValidateContext probe = new DOMValidateContext(certificate.getPublicKey(), signature);
+                probe.setProperty(SECURE_VALIDATION, Boolean.FALSE);
+                XMLSignature parsed = factory.unmarshalXMLSignature(probe);
+                List<?> references = parsed.getSignedInfo().getReferences();
                 if (references.size() != 1 || !("#" + id).equals(((Reference) references.get(0)).getURI())) {
                     return false;
                 }
+                Reference reference = (Reference) references.get(0);
+                String signatureAlg = parsed.getSignedInfo().getSignatureMethod().getAlgorithm();
+                String digestAlg = reference.getDigestMethod().getAlgorithm();
+                if (!SIGNATURE_ALGS.contains(signatureAlg) || !DIGEST_ALGS.contains(digestAlg)
+                        || !C14N_ALGS.contains(parsed.getSignedInfo().getCanonicalizationMethod().getAlgorithm())) {
+                    return false;
+                }
+                List<?> transforms = reference.getTransforms();
+                if (transforms.size() > 3) {
+                    return false;
+                }
+                for (Object transform : transforms) {
+                    if (!TRANSFORMS.contains(((Transform) transform).getAlgorithm())) {
+                        return false;
+                    }
+                }
+                boolean sha1 = SIG_ALG_RSA_SHA1.equals(signatureAlg) || DIGEST_SHA1.equals(digestAlg);
+                if (sha1 && !allowSha1) {
+                    return false;
+                }
+                if (certificate.getPublicKey() instanceof RSAKey rsa && rsa.getModulus().bitLength() < 1024) {
+                    return false;
+                }
+                DOMValidateContext context = new DOMValidateContext(certificate.getPublicKey(), signature);
+                context.setProperty(SECURE_VALIDATION, !sha1);
+                XMLSignature xmlSignature = factory.unmarshalXMLSignature(context);
                 if (xmlSignature.validate(context)) {
                     return true;
                 }
@@ -127,6 +198,35 @@ public final class EeSamlCrypto {
             }
         }
         return false;
+    }
+
+    /**
+     * 签名是否使用 SHA-1（签名算法或摘要算法）
+     */
+    public static boolean usesSha1(Element signature) {
+        if (signature == null) {
+            return false;
+        }
+        for (String tag : new String[]{"SignatureMethod", "DigestMethod"}) {
+            var nodes = signature.getElementsByTagNameNS(XMLSignature.XMLNS, tag);
+            for (int i = 0; i < nodes.getLength(); i++) {
+                String alg = ((Element) nodes.item(i)).getAttribute("Algorithm");
+                if (SIG_ALG_RSA_SHA1.equals(alg) || DIGEST_SHA1.equals(alg)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static int countId(Element element, String id) {
+        int count = id.equals(element.getAttribute("ID")) ? 1 : 0;
+        for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+            if (child instanceof Element e) {
+                count += countId(e, id);
+            }
+        }
+        return count;
     }
 
     /**

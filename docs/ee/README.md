@@ -142,25 +142,27 @@ casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2ap
 配置统一存放在 `ee_auth_config`（name ∈ ldap/oidc/cas/oauth2/saml2/dingtalk/lark/larksuite/wecom，内容对称加密）。
 外部身份通过 `EeSsoUserManage` 对应到用户：先查绑定关系 `per_user_platform(origin, platform_uid)`，账号类来源（LDAP/OIDC/CAS/OAuth2/SAML2）再按“同来源同账号”匹配，
 否则按 `basic.autoCreateUser`、`basic.platformOid`（默认 1）、`basic.platformRid`（为空时取组织内置普通用户角色）自动创建。
-外部身份**不会**匹配来源不同的同名本地账号（防止 IdP 中的 `admin` 冒用本地管理员），此时提示账号冲突。
+外部身份**不会**匹配来源不同的同名本地账号（防止 IdP 中的 `admin` 冒用本地管理员），此时提示账号冲突。邮箱不参与匹配（IdP 提供的邮箱未必经过验证，按邮箱绑定可被用来接管账号）；自动创建或同步时邮箱已被他人使用则不写入。
 
 | 方式 | 流程 |
 | --- | --- |
 | LDAP | `/login/localLogin` origin=1：管理员 DN 绑定 → 各 OU（`|` 分隔）按过滤器查找 → 用户 DN + 密码绑定；空密码直接拒绝；每次登录同步姓名、邮箱；不走 MFA（前端无 MFA 步骤） |
 | 钉钉/飞书/国际飞书/企业微信 | `/{p}/token` 用授权码换取 5 分钟、一次性的临时登录票据（独立签名，不能当登录 token 用），前端以 X-DE-TOKEN 调用 `/login/platformLogin/{origin}` 换取正式 token；`/{p}/bind` 绑定当前用户 |
 | OAuth2 | `/oauth2/auth` 返回签名 state（含 `fit2clouddeoauth2`，5 分钟、一次性）；`/oauth2/token` 换取 access_token → userinfo → 临时票据；`authMethod` 1 为 client_secret_jwt；`mapping` 支持 `a.b.c` 路径，可选 `codeKey` |
-| SAML2 | 根路径 `/saml/login`、`/saml/sso`、`/saml/metadata`（`@Controller`，不加 /de2api）；IdP 元数据保存时解析；AuthnRequest 支持 Redirect（查询串签名）与 POST（封装签名）；Response 必须有有效签名并校验 Destination/InResponseTo/Issuer/时间/Audience/Recipient，成功后回跳 `?state=fit2cloud-saml2&saml2Token=…`；不支持加密断言、默认拒绝 IdP 发起的登录（`dataease.ee.sso.saml.allow-idp-initiated`） |
+| SAML2 | 根路径 `/saml/login`、`/saml/sso`、`/saml/metadata`（`@Controller`，不加 /de2api）；IdP 元数据保存时解析；AuthnRequest 支持 Redirect（查询串签名）与 POST（封装签名）；Response 必须有有效签名并校验 Destination/InResponseTo/Issuer/时间/Audience/Recipient，成功后回跳 `?state=fit2cloud-saml2&saml2Token=…`；Response 签名在解密前校验。支持加密断言（`EeSamlDecryptor`，仅 JDK：RSA-OAEP（mgf1p / xmlenc11，SHA-1~512）与 RSA1_5 密钥传输，AES-128/192/256-CBC/GCM、3DES 内容加密），使用 SP 私钥解密，SP 元数据同时以该证书声明 signing 与 encryption 用途；默认拒绝 SHA-1 签名与 IdP 发起的登录 |
 | OIDC / CAS | 前端跳转 `/oidcbi/`、`/casbi/` 后调用 `platformLogin(2/3)`，身份来源见下 |
+
+MFA：平台类登录（OIDC/CAS/OAuth2/SAML2/扫码）仅在 `mfa.platformEnable=true` 时按 `mfa.status` / 用户设置要求 MFA，LDAP 不要求。
 
 ### OIDC / CAS 的两种部署方式
 
 1. **APISIX 网关（安装包 enterprise 模式）**：保存或启停 OIDC/CAS 时，后端通过 Admin API（`dataease.apisix-api.domain/key`）维护路由
    `dataease`（`/*`）、`dataease-oidc`（`/oidcbi/*`，openid-connect 插件，`logout_path=/oidcbi/oidc/logout`）、`dataease-cas`（`/casbi/*`，cas-auth 插件，
-   回调 `/casbi/cas_callback`、登出 `/casbi/cas/logout`），并去掉前缀、注入共享密钥头 `X-DE-GATEWAY-SECRET`。后端只信任携带正确密钥的
+   回调 `/casbi/cas_callback`、登出 `/casbi/cas/logout`），并去掉前缀、注入共享密钥头 `X-DE-GATEWAY-SECRET`。认证路由先以 `serverless-pre-function`（rewrite 阶段）删除客户端自带的 `X-Userinfo` / `X-CAS-USER`（防止在另一条认证路由上伪造身份），默认路由删除这两个头与密钥头；APISIX 的 cas-auth 插件不向上游传递用户，CAS 路由另附 `serverless-post-function`（access 阶段）从共享字典 `cas_sessions` 取出用户写入 `X-CAS-USER`（cas-auth 忽略 `cas_callback_domain` / `logout_redirect_url`，回调地址取自请求本身）。后端只信任携带正确密钥的
    `X-Userinfo`（Base64 JSON）/ `X-CAS-USER`。网关不可用时只记录警告。用户需通过 APISIX 端口访问整个站点。
 2. **内置网关（无 APISIX，直接访问后端端口）**：`EeSsoGatewayFilter` 处理 `/oidcbi/**`、`/casbi/**`：去掉前缀后交给后续过滤器；页面请求未登录时
    跳转 IdP（OIDC 授权码 + 可选 PKCE，state/nonce 存签名 Cookie；CAS `/login?service=…/casbi/cas_callback`，`/p3/serviceValidate` 校验 ticket），
-   认证后以签名 Cookie `DE_SSO_SESSION`（Path 限定在前缀下）保存会话；同样处理两个登出地址。OIDC 的 `redirectUri` 必须位于 `/oidcbi/` 下。
+   认证后以签名 Cookie `DE_SSO_SESSION`（Path 限定在前缀下）保存会话；同样处理两个登出地址（OIDC 登出时以会话中保存的 id_token 作为 `id_token_hint`，Keycloak 等不再要求确认）。OIDC 的 `redirectUri` 必须位于 `/oidcbi/` 下；填写 `…/oidcbi/oidc/callback` 时两种部署方式通用。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -169,7 +171,15 @@ casbi/oidcbi 前缀）。白名单（`WhitelistUtils`）、OPTIONS、非 `/de2ap
 | `dataease.ee.sso.native-enabled` | `true` | 是否启用内置网关 |
 | `dataease.ee.sso.apisix.enabled` / `.upstream` | `true` / `dataease:8100` | 是否维护 APISIX 路由及上游地址 |
 | `dataease.ee.sso.trust-all-certificates` | `false` | 调用 IdP / 开放平台时是否信任自签名证书 |
+| `dataease.ee.sso.saml.authn-request-binding` | `auto` | AuthnRequest 绑定：`auto`（IdP 支持时用 Redirect）/ `redirect` / `post`；IdP 元数据不支持所选绑定时回退 |
+| `dataease.ee.sso.saml.allow-sha1` | `false` | 是否接受 RSA-SHA1 签名 / SHA-1 摘要（拒绝时错误信息会提示） |
+| `dataease.ee.sso.saml.require-encrypted-assertion` | `false` | 是否要求断言必须加密 |
+| `dataease.ee.sso.saml.allow-idp-initiated` | `false` | 是否接受 IdP 发起的登录（无 InResponseTo） |
 | `dataease.ee.platform.{dingtalk.oapi,dingtalk.api,lark.api,larksuite.api,wecom.api}` | 官方域名 | 开放平台地址（私有化部署或测试替身） |
+
+验证记录（真实 IdP）：Keycloak 26.0（OIDC 内置网关 / APISIX、OAuth2、SAML2 Redirect 与 POST 绑定、签名 Response / Assertion、加密断言、
+SHA-1 拒绝与开关）、Apereo CAS 7（内置网关 / APISIX）、OpenLDAP（osixia/openldap 1.5.0）、APISIX 3.11 Admin API。
+Keycloak 作为 IdP 时加密算法固定为 rsa-oaep-mgf1p + aes128-cbc，其余算法组合以 Apache Santuario 加密的样本验证。
 
 ### 供其他模块使用
 * `EePlatformMessageService.sendToUsers(origin, uids, message)` / `sendToGroups(origin, groupIds, message)`；`EePlatformMessage.text/markdown/image/file`。

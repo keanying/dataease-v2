@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.dataease.api.xpack.settings.vo.XpackCasVO;
 import io.dataease.api.xpack.settings.vo.XpackOidcVO;
+import io.dataease.constant.AuthConstant;
 import io.dataease.ee.sso.EeSsoConstants;
 import io.dataease.ee.sso.support.EeHttp;
 import io.dataease.ee.sso.support.EeJson;
@@ -22,7 +23,15 @@ import java.net.URI;
  *     <li>{@code dataease-oidc}：{@code /oidcbi/*}，openid-connect 插件认证后注入 X-Userinfo；</li>
  *     <li>{@code dataease-cas}：{@code /casbi/*}，cas-auth 插件认证后注入 X-CAS-USER。</li>
  * </ul>
- * 两个认证路由都会去掉前缀并注入共享密钥头 X-DE-GATEWAY-SECRET。网关不可用时只记录日志，不影响保存（内置网关仍可工作）。
+ * 两个认证路由都会去掉前缀、先删除客户端自带的身份头（X-Userinfo / X-CAS-USER，serverless-pre-function，防止在另一条认证路由上伪造身份）
+ * 并注入共享密钥头 X-DE-GATEWAY-SECRET；默认路由删除客户端自带的身份头与密钥头。
+ *
+ * <p>APISIX 自带的 cas-auth 插件只在共享字典 {@code cas_sessions} 中保存“会话 → 用户”，不向上游传递用户，
+ * 因此 CAS 路由附加一个 serverless-post-function（access 阶段，在 cas-auth 之后执行）读取会话并注入 X-CAS-USER。
+ * cas-auth 插件不支持回调域名与登出跳转地址（cas_callback_domain / logout_redirect_url 会被忽略），
+ * 回调地址取自请求的 scheme://host:port。</p>
+ *
+ * <p>网关不可用时只记录日志，不影响保存（内置网关仍可工作）。</p>
  */
 @Component
 public class EeApisixRouteManage {
@@ -32,6 +41,24 @@ public class EeApisixRouteManage {
     private static final String ROUTE_OIDC = "dataease-oidc";
 
     private static final String ROUTE_CAS = "dataease-cas";
+
+    private static final String STRIP_IDENTITY_FUNCTION = "return function(conf, ctx) "
+            + "local core = require('apisix.core') "
+            + "core.request.set_header(ctx, '" + AuthConstant.OIDC_X_USER + "', nil) "
+            + "core.request.set_header(ctx, '" + AuthConstant.CAS_X_USER + "', nil) "
+            + "end";
+
+    /**
+     * cas-auth 认证通过后，按 CAS_SESSION Cookie 从 cas_sessions 字典取出用户并注入 X-CAS-USER
+     */
+    private static final String CAS_USER_FUNCTION = "return function(conf, ctx) "
+            + "local core = require('apisix.core') "
+            + "local sid = ctx.var.cookie_CAS_SESSION "
+            + "local store = ngx.shared.cas_sessions "
+            + "if sid and store then "
+            + "local user = store:get(sid) "
+            + "if user then core.request.set_header(ctx, '" + AuthConstant.CAS_X_USER + "', user) end "
+            + "end end";
 
     @Value("${dataease.apisix-api.domain:}")
     private String domain;
@@ -86,8 +113,9 @@ public class EeApisixRouteManage {
         ObjectNode plugins = EeJson.object();
         plugins.set("openid-connect", oidc);
         plugins.set("proxy-rewrite", rewrite(EeSsoConstants.OIDC_PREFIX));
+        stripIdentityHeaders(plugins);
         put(ROUTE_OIDC, route(ROUTE_OIDC, ctx + EeSsoConstants.OIDC_PREFIX + "/*", 10, plugins));
-        put(ROUTE_DEFAULT, route(ROUTE_DEFAULT, "/*", 0, null));
+        putDefault();
     }
 
     public void syncCas(XpackCasVO vo, boolean enable) {
@@ -112,8 +140,13 @@ public class EeApisixRouteManage {
         ObjectNode plugins = EeJson.object();
         plugins.set("cas-auth", cas);
         plugins.set("proxy-rewrite", rewrite(EeSsoConstants.CAS_PREFIX));
+        stripIdentityHeaders(plugins);
+        ObjectNode casUser = EeJson.object();
+        casUser.put("phase", "access");
+        casUser.putArray("functions").add(CAS_USER_FUNCTION);
+        plugins.set("serverless-post-function", casUser);
         put(ROUTE_CAS, route(ROUTE_CAS, ctx + EeSsoConstants.CAS_PREFIX + "/*", 10, plugins));
-        put(ROUTE_DEFAULT, route(ROUTE_DEFAULT, "/*", 0, null));
+        putDefault();
     }
 
     private ObjectNode rewrite(String prefix) {
@@ -123,6 +156,29 @@ public class EeApisixRouteManage {
         regex.add("$1/$2");
         rewrite.putObject("headers").putObject("set").put(EeSsoConstants.GATEWAY_SECRET_HEADER, support.gatewaySecret());
         return rewrite;
+    }
+
+    /**
+     * 认证路由：在所有插件之前（serverless-pre-function，rewrite 阶段）删除客户端自带的身份头，认证插件随后写入真实身份。
+     * 不能用 proxy-rewrite 删除：openid-connect 在 rewrite 阶段且优先级高于 proxy-rewrite，会把插件写入的 X-Userinfo 一并删掉。
+     */
+    private void stripIdentityHeaders(ObjectNode plugins) {
+        ObjectNode strip = EeJson.object();
+        strip.put("phase", "rewrite");
+        strip.putArray("functions").add(STRIP_IDENTITY_FUNCTION);
+        plugins.set("serverless-pre-function", strip);
+    }
+
+    /**
+     * 默认路由：删除客户端自带的身份头与密钥头后转发
+     */
+    private void putDefault() {
+        ObjectNode rewrite = EeJson.object();
+        rewrite.putObject("headers").putArray("remove").add(AuthConstant.OIDC_X_USER).add(AuthConstant.CAS_X_USER)
+                .add(EeSsoConstants.GATEWAY_SECRET_HEADER);
+        ObjectNode plugins = EeJson.object();
+        plugins.set("proxy-rewrite", rewrite);
+        put(ROUTE_DEFAULT, route(ROUTE_DEFAULT, "/*", 0, plugins));
     }
 
     private ObjectNode route(String name, String uri, int priority, ObjectNode plugins) {

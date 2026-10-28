@@ -1,7 +1,6 @@
 package io.dataease.ee.sso.gateway;
 
 import com.auth0.jwt.interfaces.DecodedJWT;
-import com.fasterxml.jackson.databind.JsonNode;
 import io.dataease.api.xpack.settings.vo.XpackCasVO;
 import io.dataease.api.xpack.settings.vo.XpackOidcVO;
 import io.dataease.constant.AuthConstant;
@@ -94,6 +93,7 @@ public class EeSsoGatewayFilter implements Filter {
         XpackOidcVO vo = support.oidc();
         boolean active = support.active(EeSsoConstants.OIDC, XpackOidcVO.class);
         if (EeSsoConstants.OIDC_LOGOUT_PATH.equals(path)) {
+            String idToken = support.sessionIdToken(request);
             support.clear(request, response, prefix, EeSsoGatewaySupport.SESSION_COOKIE);
             String target = support.siteRoot(request) + "/";
             if (active && vo != null) {
@@ -102,6 +102,10 @@ public class EeSsoGatewayFilter implements Filter {
                     if (StringUtils.isNotBlank(discovery.endSessionEndpoint())) {
                         Map<String, String> query = new LinkedHashMap<>();
                         query.put("client_id", vo.getClientId());
+                        if (StringUtils.isNotBlank(idToken)) {
+                            // 携带 id_token_hint 时 IdP（如 Keycloak）不再要求用户确认登出
+                            query.put("id_token_hint", idToken);
+                        }
                         query.put("post_logout_redirect_uri", target);
                         target = io.dataease.ee.sso.support.EeHttp.url(discovery.endSessionEndpoint(), query);
                     }
@@ -124,14 +128,14 @@ public class EeSsoGatewayFilter implements Filter {
                     error(response, "OIDC: " + request.getParameter("error") + " " + StringUtils.defaultString(request.getParameter("error_description")));
                     return true;
                 }
-                JsonNode claims = oidcManage.exchange(vo, request.getParameter("code"), saved.getClaim("nonce").asString(),
-                        saved.getClaim("verifier").asString());
-                ExternalIdentity identity = oidcManage.identity(vo, claims);
+                EeOidcManage.TokenResult tokens = oidcManage.exchangeTokens(vo, request.getParameter("code"),
+                        saved.getClaim("nonce").asString(), saved.getClaim("verifier").asString());
+                ExternalIdentity identity = oidcManage.identity(vo, tokens.claims());
                 if (identity == null) {
                     error(response, "OIDC: no account claim");
                     return true;
                 }
-                support.writeSession(request, response, prefix, identity);
+                support.writeSession(request, response, prefix, identity, tokens.idToken());
                 response.sendRedirect(safeReturn(saved.getClaim("ret").asString(), prefix));
                 return true;
             }
