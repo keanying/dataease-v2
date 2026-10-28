@@ -12,6 +12,7 @@ import io.dataease.api.permissions.embedded.dto.EmbeddedResetRequest;
 import io.dataease.api.permissions.embedded.vo.EmbeddedGridVO;
 import io.dataease.auth.interceptor.CorsConfig;
 import io.dataease.ee.permissions.dao.entity.PerUser;
+import io.dataease.ee.auth.revoke.EeTokenRevocation;
 import io.dataease.ee.permissions.dao.repo.PerUserRepository;
 import io.dataease.ee.setting.EeSettingSupport;
 import io.dataease.ee.setting.embedded.dao.PerEmbedded;
@@ -24,13 +25,13 @@ import io.dataease.result.ResultCode;
 import io.dataease.utils.IDUtils;
 import io.dataease.utils.JsonUtil;
 import io.dataease.utils.LogUtil;
-import io.dataease.utils.Md5Utils;
 import jakarta.persistence.criteria.Predicate;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -38,11 +39,14 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.servlet.handler.AbstractHandlerMapping;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
@@ -73,15 +77,20 @@ public class EeEmbeddedManage {
     @Value("${dataease.embedded.limit:0}")
     private int limit;
 
-    /**
-     * 已注销 token 的摘要 -> 过期时间
-     */
-    private final Map<String, Long> destroyed = new ConcurrentHashMap<>();
+    private final EeTokenRevocation revocation;
 
-    public EeEmbeddedManage(PerEmbeddedRepository repository, PerUserRepository perUserRepository, ObjectProvider<CorsConfig> corsConfig) {
+    private final ApplicationContext applicationContext;
+
+    @Value("${dataease.cors-strict:false}")
+    private boolean corsStrict;
+
+    public EeEmbeddedManage(PerEmbeddedRepository repository, PerUserRepository perUserRepository, ObjectProvider<CorsConfig> corsConfig,
+                            EeTokenRevocation revocation, ApplicationContext applicationContext) {
         this.repository = repository;
         this.perUserRepository = perUserRepository;
         this.corsConfig = corsConfig;
+        this.revocation = revocation;
+        this.applicationContext = applicationContext;
     }
 
     public int limit() {
@@ -179,17 +188,52 @@ public class EeEmbeddedManage {
         return new ArrayList<>(result);
     }
 
+    /**
+     * 把嵌入式应用域名同步到 CORS；在事务中调用时等提交后再同步，避免同步失败影响（或掩盖）保存本身的结果
+     */
     @EventListener(ApplicationReadyEvent.class)
     public void syncCors() {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    doSyncCors();
+                }
+            });
+            return;
+        }
+        doSyncCors();
+    }
+
+    private void doSyncCors() {
         CorsConfig config = corsConfig.getIfAvailable();
         if (config == null) {
             return;
         }
         try {
             config.addAllowedOrigins(domainList());
+            if (corsStrict) {
+                applyStrictCors(config.getAllOrigins());
+            }
         } catch (Exception e) {
             LogUtil.warn("sync embedded domains to cors failed: " + e.getMessage());
         }
+    }
+
+    /**
+     * 严格模式下 Spring 在启动时就固定了 CORS 配置，运行期修改 CorsRegistration 不会生效；
+     * 这里按核心 CorsConfig 的同一规则重建配置并写回各 HandlerMapping，使新增/删除的嵌入式应用域名立即生效。
+     */
+    private void applyStrictCors(List<String> origins) {
+        CorsConfiguration cors = new CorsConfiguration().applyPermitDefaultValues();
+        cors.setAllowCredentials(false);
+        cors.setAllowedHeaders(List.of("*"));
+        cors.setMaxAge(3600L);
+        cors.setAllowedMethods(List.of("GET", "POST", "DELETE"));
+        cors.setAllowedOrigins(new ArrayList<>(origins));
+        Map<String, CorsConfiguration> mappings = Map.of("/**", cors);
+        applicationContext.getBeansOfType(AbstractHandlerMapping.class)
+                .values().forEach(mapping -> mapping.setCorsConfigurations(mappings));
     }
 
     private PerEmbedded get(Long id) {
@@ -265,7 +309,7 @@ public class EeEmbeddedManage {
         } catch (JWTVerificationException e) {
             fail("embedded token is invalid");
         }
-        if (destroyed.containsKey(Md5Utils.md5(token))) {
+        if (revocation.isRevoked(token)) {
             fail("token is destroyed");
         }
         String account = decoded.getClaim("account").asString();
@@ -317,7 +361,6 @@ public class EeEmbeddedManage {
             return;
         }
         long now = System.currentTimeMillis();
-        destroyed.entrySet().removeIf(entry -> entry.getValue() < now);
         long exp = now + 24L * 3600 * 1000;
         try {
             Date expiresAt = JWT.decode(token).getExpiresAt();
@@ -327,7 +370,7 @@ public class EeEmbeddedManage {
         } catch (JWTVerificationException ignored) {
             // 无法解析的 token 按默认时间记录
         }
-        destroyed.put(Md5Utils.md5(token), exp);
+        revocation.revoke(token, "embedded", exp);
     }
 
     /**

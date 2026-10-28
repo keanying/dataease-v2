@@ -1,6 +1,8 @@
 package io.dataease.ee.setting.apikey.dao;
 
+import io.dataease.ee.common.EeSecretConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -34,9 +36,10 @@ public class PerApiKey {
     private String accessKey;
 
     @NotNull
-    @Size(max = 128)
-    @Comment("accessSecret（JWT 签名密钥）")
-    @Column(name = "access_secret", nullable = false, length = 128)
+    @Size(max = 256)
+    @Comment("accessSecret（JWT 签名密钥，加密存储）")
+    @Convert(converter = EeSecretConverter.class)
+    @Column(name = "access_secret", nullable = false, length = 256)
     private String accessSecret;
 
     @NotNull

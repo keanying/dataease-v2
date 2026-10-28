@@ -1,5 +1,6 @@
 package io.dataease.ee.webhook.dao;
 
+import io.dataease.ee.common.EeSecretConverter;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Size;
 import lombok.Getter;
@@ -33,9 +34,10 @@ public class XpackWebhook {
     @Column(name = "url", nullable = false)
     private String url;
 
-    @Size(max = 255)
-    @Comment("签名密钥")
-    @Column(name = "secret")
+    @Size(max = 1200)
+    @Comment("签名密钥（加密存储）")
+    @Convert(converter = EeSecretConverter.class)
+    @Column(name = "secret", length = 1200)
     private String secret;
 
     @Size(max = 64)

@@ -1,6 +1,8 @@
 package io.dataease.ee.setting.embedded.dao;
 
+import io.dataease.ee.common.EeSecretConverter;
 import jakarta.persistence.Column;
+import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -35,9 +37,10 @@ public class PerEmbedded {
     private String appId;
 
     @NotNull
-    @Size(max = 64)
-    @Comment("应用密钥（嵌入式 token 的 HS256 签名密钥）")
-    @Column(name = "app_secret", nullable = false, length = 64)
+    @Size(max = 128)
+    @Comment("应用密钥（嵌入式 token 的 HS256 签名密钥，加密存储）")
+    @Convert(converter = EeSecretConverter.class)
+    @Column(name = "app_secret", nullable = false, length = 128)
     private String appSecret;
 
     @NotNull

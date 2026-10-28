@@ -11,7 +11,7 @@ import io.dataease.exception.DEException;
 import io.dataease.permission.model.V3BaseUser;
 import io.dataease.permission.util.V3UserUtil;
 import io.dataease.result.ResultCode;
-import io.dataease.utils.Md5Utils;
+import io.dataease.ee.auth.revoke.EeTokenRevocation;
 import io.dataease.utils.RsaUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -19,9 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Date;
-import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 登录 token：HS256 JWT，声明 uid/oid，签名密钥由 用户密码摘要 与 系统 RSA 私钥 派生（服务端保密），
@@ -39,10 +37,11 @@ public class EeTokenManage {
     @Value("${dataease.login_timeout:480}")
     private Long loginTimeout;
 
-    /**
-     * 已注销 token 的摘要 -> 过期时间
-     */
-    private final Map<String, Long> destroyed = new ConcurrentHashMap<>();
+    private final EeTokenRevocation revocation;
+
+    public EeTokenManage(EeTokenRevocation revocation) {
+        this.revocation = revocation;
+    }
 
     public TokenVO generate(Long uid, Long oid) {
         V3BaseUser user = V3UserUtil.getUser(uid);
@@ -80,7 +79,7 @@ public class EeTokenManage {
         if (ObjectUtils.isEmpty(uid)) {
             fail("token is invalid");
         }
-        if (destroyed.containsKey(digest(token))) {
+        if (revocation.isRevoked(token)) {
             fail("token is destroyed");
         }
         V3BaseUser user = V3UserUtil.getUser(uid);
@@ -112,7 +111,6 @@ public class EeTokenManage {
             return;
         }
         long now = System.currentTimeMillis();
-        destroyed.entrySet().removeIf(entry -> entry.getValue() < now);
         long exp = now + loginTimeout * 60 * 1000;
         try {
             Date expiresAt = JWT.decode(token).getExpiresAt();
@@ -122,15 +120,11 @@ public class EeTokenManage {
         } catch (JWTVerificationException ignored) {
             // 无法解析的 token 按默认有效期记录
         }
-        destroyed.put(digest(token), exp);
+        revocation.revoke(token, "user", exp);
     }
 
     public Long getLoginTimeout() {
         return loginTimeout;
-    }
-
-    private String digest(String token) {
-        return Md5Utils.md5(token);
     }
 
     private void fail(String message) {

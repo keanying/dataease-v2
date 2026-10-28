@@ -137,6 +137,19 @@ public class EeCorePermitAspect {
 
     // ------------------------------------------------------------------ datasource
 
+    /**
+     * 通用参数查询接口不返回密码、密钥类设置项（邮件密码、HMAC 密钥等仅由对应的设置接口按权限返回）
+     */
+    @Around("execution(* io.dataease.api.system.SysParameterApi.singleVal(..)) && args(key)")
+    public Object sysParameterSingleVal(ProceedingJoinPoint joinPoint, String key) throws Throwable {
+        if (key != null && SECRET_KEY.matcher(key).find()) {
+            return null;
+        }
+        return joinPoint.proceed();
+    }
+
+    private static final java.util.regex.Pattern SECRET_KEY = java.util.regex.Pattern.compile("(?i)(pwd|password|secret|token)");
+
     @Before("execution(* io.dataease.api.ds.DatasourceApi.save(..)) && args(request)")
     public void dsSave(BusiDsRequest request) {
         if (request.getId() == null) {
