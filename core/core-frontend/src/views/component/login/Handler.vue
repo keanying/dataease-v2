@@ -108,6 +108,8 @@ const showMfa = ref(false)
 const toMfa = mfa => {
   state.mfaData = mfa
   showMfa.value = true
+  // 单点登录回调时登录表单处于 preheat 禁用状态，MFA 步骤在表单内，需要先解除
+  emits('autoCallback', { preheat: false })
   if (document.getElementsByClassName('preheat-container')?.length) {
     document.getElementsByClassName('preheat-container')[0].setAttribute('style', 'display: none;')
   }
