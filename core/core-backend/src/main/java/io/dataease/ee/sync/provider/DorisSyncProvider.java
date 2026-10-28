@@ -131,6 +131,17 @@ public class DorisSyncProvider extends MysqlSyncProvider {
         }
     }
 
+    /**
+     * Doris 无二进制类型（映射为 STRING），二进制值按 Base64 文本写入（与 Stream Load 一致）
+     */
+    @Override
+    public Object writeValue(Object value) {
+        if (value instanceof byte[] bytes) {
+            return java.util.Base64.getEncoder().encodeToString(bytes);
+        }
+        return value;
+    }
+
     @Override
     protected List<String> sinkDataTypes() {
         return TYPES;

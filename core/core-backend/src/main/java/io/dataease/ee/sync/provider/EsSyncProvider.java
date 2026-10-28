@@ -225,10 +225,9 @@ public class EsSyncProvider extends SyncProvider implements SourceProvider, Sync
                 TableDTO dto = new TableDTO();
                 dto.setDatasourceId(request.getId());
                 dto.setName(name);
-                String count = node.path("docs.count").asText("");
-                dto.setRemark(StringUtils.isBlank(count) ? null : Translator.get("ee_sync_es_docs", count));
                 tables.put(name, dto);
             }
+            fillDocCounts(http, cfg, tables);
             JsonNode aliases = call(http, "GET", cfg.getUrl() + "/_cat/aliases?format=json&h=alias,index&s=alias", null, null);
             for (JsonNode node : aliases) {
                 String alias = node.path("alias").asText("");
@@ -245,6 +244,34 @@ public class EsSyncProvider extends SyncProvider implements SourceProvider, Sync
             return rethrow(e);
         }
         return new ArrayList<>(tables.values());
+    }
+
+    /**
+     * 文档数（备注）：_cat/indices 的 docs.count 含 nested 子文档，改用 _msearch 统计顶层文档数；失败时不显示
+     */
+    private void fillDocCounts(SyncHttp http, DatasourceConfiguration cfg, Map<String, TableDTO> tables) {
+        if (tables.isEmpty() || tables.size() > 500) {
+            return;
+        }
+        List<String> names = new ArrayList<>(tables.keySet());
+        StringBuilder body = new StringBuilder();
+        for (String name : names) {
+            body.append(MAPPER.createObjectNode().put("index", name)).append('\n');
+            body.append("{\"size\":0,\"track_total_hits\":true}\n");
+        }
+        try {
+            JsonNode responses = call(http, "POST", cfg.getUrl() + "/_msearch", body.toString(), null).path("responses");
+            for (int i = 0; i < names.size() && i < responses.size(); i++) {
+                JsonNode total = responses.get(i).path("hits").path("total");
+                // ES 7+：{"value": n}；6.x：数字
+                JsonNode value = total.isObject() ? total.path("value") : total;
+                if (value.isNumber()) {
+                    tables.get(names.get(i)).setRemark(Translator.get("ee_sync_es_docs", String.valueOf(value.asLong())));
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("count es documents failed: " + e.getMessage());
+        }
     }
 
     @Override

@@ -192,4 +192,28 @@ public class MysqlSyncProvider extends JdbcSyncProvider {
         }
         return insertSql(configuration, table, columns) + " ON DUPLICATE KEY UPDATE " + String.join(", ", updates);
     }
+
+    /**
+     * 时间类型默认保留微秒（MySQL / Doris 的 DATETIME、TIME 不写精度时为 0，会截断或进位小数秒）
+     */
+    @Override
+    public String columnType(TableFieldDTO field) {
+        String type = StringUtils.upperCase(StringUtils.trimToEmpty(field.getFieldType()));
+        if (Set.of("DATETIME", "TIME").contains(type)) {
+            return type + "(6)";
+        }
+        return super.columnType(field);
+    }
+
+    /**
+     * MariaDB 驱动将 MySQL JSON 列读为 byte[]，转为文本
+     */
+    @Override
+    public Object readValue(java.sql.ResultSet resultSet, int index) throws SQLException {
+        Object value = super.readValue(resultSet, index);
+        if (value instanceof byte[] && "JSON".equalsIgnoreCase(resultSet.getMetaData().getColumnTypeName(index))) {
+            return resultSet.getString(index);
+        }
+        return value;
+    }
 }

@@ -27,12 +27,20 @@ public class JdbcRowWriter implements SyncRowWriter {
     private final SyncJobContext context;
     private final Consumer<String> log;
     private final boolean autoCommit;
+    /**
+     * 各写入列 NULL 值的 JDBC 类型
+     */
+    private final int[] nullTypes;
 
+    /**
+     * @param columnTypes 写入列的目标类型（与 writeSql 的参数顺序一致），用于确定 NULL 值的 JDBC 类型
+     */
     public JdbcRowWriter(Connection connection, SyncDialect dialect, String writeSql, String deleteSql, int[] keyIndexes,
-                         boolean tolerant, SyncJobContext context, Consumer<String> log) throws SQLException {
+                         List<String> columnTypes, boolean tolerant, SyncJobContext context, Consumer<String> log) throws SQLException {
         this.connection = connection;
         this.dialect = dialect;
         this.keyIndexes = keyIndexes;
+        this.nullTypes = columnTypes.stream().mapToInt(dialect::nullType).toArray();
         this.tolerant = tolerant;
         this.context = context;
         this.log = log;
@@ -63,7 +71,7 @@ public class JdbcRowWriter implements SyncRowWriter {
             if (delete != null) {
                 for (Object[] row : batch) {
                     for (int i = 0; i < keyIndexes.length; i++) {
-                        bind(delete, i + 1, row[keyIndexes[i]]);
+                        bind(delete, i + 1, row[keyIndexes[i]], keyIndexes[i]);
                     }
                     delete.addBatch();
                 }
@@ -71,7 +79,7 @@ public class JdbcRowWriter implements SyncRowWriter {
             }
             for (Object[] row : batch) {
                 for (int i = 0; i < row.length; i++) {
-                    bind(write, i + 1, row[i]);
+                    bind(write, i + 1, row[i], i);
                 }
                 write.addBatch();
             }
@@ -93,12 +101,12 @@ public class JdbcRowWriter implements SyncRowWriter {
                 try {
                     if (delete != null) {
                         for (int i = 0; i < keyIndexes.length; i++) {
-                            bind(delete, i + 1, row[keyIndexes[i]]);
+                            bind(delete, i + 1, row[keyIndexes[i]], keyIndexes[i]);
                         }
                         delete.executeUpdate();
                     }
                     for (int i = 0; i < row.length; i++) {
-                        bind(write, i + 1, row[i]);
+                        bind(write, i + 1, row[i], i);
                     }
                     write.executeUpdate();
                     connection.commit();
@@ -111,9 +119,10 @@ public class JdbcRowWriter implements SyncRowWriter {
         }
     }
 
-    private void bind(PreparedStatement ps, int index, Object value) throws SQLException {
+    private void bind(PreparedStatement ps, int index, Object raw, int column) throws SQLException {
+        Object value = dialect.writeValue(raw);
         if (value == null) {
-            ps.setNull(index, dialect.nullType());
+            ps.setNull(index, column < nullTypes.length ? nullTypes[column] : dialect.nullType());
         } else if (value instanceof LocalDateTime ldt) {
             ps.setTimestamp(index, Timestamp.valueOf(ldt));
         } else {

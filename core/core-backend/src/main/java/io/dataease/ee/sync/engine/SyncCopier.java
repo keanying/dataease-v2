@@ -249,7 +249,10 @@ public class SyncCopier {
             writeSql = targetDialect.insertSql(targetCfg, writeTable, targetCols);
         }
         int[] keyIndexes = keys.stream().mapToInt(targetCols::indexOf).toArray();
-        return new JdbcRowWriter(tgt, targetDialect, writeSql, deleteSql, keyIndexes, tolerance > 0, context, log);
+        List<String> columnTypes = targetCols.stream().map(col -> target.getFieldList().stream()
+                .filter(f -> StringUtils.equals(f.getFieldName(), col)).map(TableFieldDTO::getFieldType)
+                .findFirst().orElse(null)).toList();
+        return new JdbcRowWriter(tgt, targetDialect, writeSql, deleteSql, keyIndexes, columnTypes, tolerance > 0, context, log);
     }
 
     /**
