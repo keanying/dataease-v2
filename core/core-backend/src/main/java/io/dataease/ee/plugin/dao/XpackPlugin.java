@@ -54,7 +54,7 @@ public class XpackPlugin {
 
     @Lob
     @Comment("图标（SVG）")
-    @Column(name = "icon", columnDefinition = "longtext")
+    @Column(name = "icon", length = 16777216)
     private String icon;
 
     @NotNull
