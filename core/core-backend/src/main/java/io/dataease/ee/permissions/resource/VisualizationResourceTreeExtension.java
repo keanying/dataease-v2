@@ -1,5 +1,6 @@
 package io.dataease.ee.permissions.resource;
 
+import io.dataease.ee.report.ReportManage;
 import io.dataease.ee.threshold.ThresholdManage;
 import io.dataease.utils.LogUtil;
 import org.springframework.beans.factory.ObjectProvider;
@@ -24,9 +25,13 @@ public class VisualizationResourceTreeExtension {
 
     private final ObjectProvider<ThresholdManage> thresholdManage;
 
-    public VisualizationResourceTreeExtension(EeResourceTreeSupport support, ObjectProvider<ThresholdManage> thresholdManage) {
+    private final ObjectProvider<ReportManage> reportManage;
+
+    public VisualizationResourceTreeExtension(EeResourceTreeSupport support, ObjectProvider<ThresholdManage> thresholdManage,
+                                              ObjectProvider<ReportManage> reportManage) {
         this.support = support;
         this.thresholdManage = thresholdManage;
+        this.reportManage = reportManage;
     }
 
     public static int rtId(String busiFlag) {
@@ -69,6 +74,15 @@ public class VisualizationResourceTreeExtension {
                 manage.removeOrphans();
             } catch (Exception e) {
                 LogUtil.error("remove thresholds of deleted visualization failed: " + e.getMessage(), e);
+            }
+        }
+        // 停止以已删除仪表板/大屏为对象的定时报告
+        ReportManage reports = reportManage.getIfAvailable();
+        if (reports != null) {
+            try {
+                reports.stopOrphans();
+            } catch (Exception e) {
+                LogUtil.error("stop reports of deleted visualization failed: " + e.getMessage(), e);
             }
         }
     }

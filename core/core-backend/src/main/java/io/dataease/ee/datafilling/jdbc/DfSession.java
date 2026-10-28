@@ -1,5 +1,6 @@
 package io.dataease.ee.datafilling.jdbc;
 
+import io.dataease.ee.datasource.dm.DmDictionary;
 import io.dataease.exception.DEException;
 import io.dataease.extensions.datafilling.provider.ExtDDLProvider;
 import io.dataease.extensions.datasource.dto.ConnectionObj;
@@ -26,6 +27,13 @@ public class DfSession implements AutoCloseable {
     private final String type;
 
     private ExtDDLProvider ddl;
+
+    /**
+     * 本会话创建的临时 LOB，关闭时释放
+     */
+    private final List<Clob> lobs = new ArrayList<>();
+
+    private Integer maxIdentifierLength;
 
     /**
      * 显式指定的模式（SQL Server 用于限定表名；为空时使用连接默认模式）
@@ -324,6 +332,12 @@ public class DfSession implements AutoCloseable {
         }
     }
 
+    /**
+     * Oracle 中超过该长度的字符串参数以 CLOB 绑定：VARCHAR2 列最长 4000，更长的值只会写入 CLOB 列，
+     * 而字符串绑定在 PL/SQL 块（RETURNING INTO）中受 32767 字节限制
+     */
+    private static final int ORACLE_LOB_THRESHOLD = 4000;
+
     private void bind(PreparedStatement ps, List<Object> params) throws SQLException {
         if (params == null) {
             return;
@@ -332,6 +346,10 @@ public class DfSession implements AutoCloseable {
             Object v = params.get(i);
             if (v == null) {
                 ps.setNull(i + 1, dialect.nullType());
+            } else if (v instanceof DfDialect.DfLob lob) {
+                bindLob(ps, i + 1, lob.value());
+            } else if (v instanceof String s && dialect.isOracle() && s.length() > ORACLE_LOB_THRESHOLD) {
+                bindLob(ps, i + 1, s);
             } else if (v instanceof java.util.Date date && !(v instanceof Timestamp) && !(v instanceof java.sql.Date)) {
                 ps.setTimestamp(i + 1, new Timestamp(date.getTime()));
             } else {
@@ -341,11 +359,35 @@ public class DfSession implements AutoCloseable {
     }
 
     /**
+     * 以 CLOB 绑定字符串：优先使用临时 LOB（在 PL/SQL 块中同样不受 32K 限制），驱动不支持时退回字符流
+     */
+    private void bindLob(PreparedStatement ps, int index, String value) throws SQLException {
+        Clob clob = null;
+        try {
+            clob = connection.createClob();
+            clob.setString(1, value);
+        } catch (SQLException | UnsupportedOperationException e) {
+            clob = null;
+        }
+        if (clob != null) {
+            lobs.add(clob);
+            ps.setClob(index, clob);
+        } else {
+            ps.setCharacterStream(index, new java.io.StringReader(value), value.length());
+        }
+    }
+
+    /**
      * 列出当前库/模式下的表
      */
     public List<String> tables() {
         List<String> result = new ArrayList<>();
         try {
+            if (dialect.isDm()) {
+                // 达梦驱动元数据需要查询系统表的权限，改用 ALL_* 数据字典视图
+                DmDictionary.tables(connection, schema(), false).forEach(t -> result.add(t.name()));
+                return result;
+            }
             DatabaseMetaData meta = connection.getMetaData();
             try (ResultSet rs = meta.getTables(connection.getCatalog(), schema(), "%", new String[]{"TABLE"})) {
                 while (rs.next()) {
@@ -369,6 +411,23 @@ public class DfSession implements AutoCloseable {
         List<TableField> result = new ArrayList<>();
         String realTable = tables().stream().filter(t -> StringUtils.equalsIgnoreCase(t, table)).findFirst().orElse(table);
         try {
+            if (dialect.isDm()) {
+                Set<String> pks = DmDictionary.primaryKeys(connection, schema(), realTable);
+                for (DmDictionary.Column c : DmDictionary.columns(connection, schema(), realTable)) {
+                    TableField field = new TableField();
+                    field.setOriginName(c.name());
+                    field.setName(StringUtils.defaultIfBlank(c.remarks(), c.name()));
+                    field.setType(c.typeName());
+                    field.setFieldType(c.typeName());
+                    field.setSize(c.size());
+                    field.setDeType(deType(DmDictionary.jdbcType(c.typeName())));
+                    field.setDeExtractType(field.getDeType());
+                    field.setPrimary(pks.contains(c.name()));
+                    field.setPrimaryKey(pks.contains(c.name()));
+                    result.add(field);
+                }
+                return result;
+            }
             DatabaseMetaData meta = connection.getMetaData();
             Set<String> pks = new HashSet<>();
             try (ResultSet rs = meta.getPrimaryKeys(connection.getCatalog(), schema(), realTable)) {
@@ -446,8 +505,57 @@ public class DfSession implements AutoCloseable {
         };
     }
 
+    /**
+     * 目标库允许的表名/列名/索引名最大长度（Oracle、PostgreSQL、达梦按字节计，见 {@link DfDialect#identifierLength}）。
+     * <p>优先取驱动元数据；Oracle 12.2 之前为 30，之后为 128；取不到时返回 0（不限制）。</p>
+     */
+    public int maxIdentifierLength() {
+        if (maxIdentifierLength != null) {
+            return maxIdentifierLength;
+        }
+        int limit = 0;
+        try {
+            DatabaseMetaData meta = connection.getMetaData();
+            int table = meta.getMaxTableNameLength();
+            int column = meta.getMaxColumnNameLength();
+            limit = table > 0 && column > 0 ? Math.min(table, column) : Math.max(table, column);
+            if (dialect.isOracle()) {
+                int major = meta.getDatabaseMajorVersion();
+                int minor = meta.getDatabaseMinorVersion();
+                int byVersion = major > 12 || (major == 12 && minor >= 2) ? 128 : 30;
+                limit = limit > 0 ? Math.min(limit, byVersion) : byVersion;
+            }
+        } catch (Exception e) {
+            LogUtil.warn("data filling: read identifier length limit failed: " + e.getMessage());
+        }
+        maxIdentifierLength = Math.max(limit, 0);
+        return maxIdentifierLength;
+    }
+
+    /**
+     * 指定标识符长度上限（配置 {@code dataease.ee.data-filling.max-identifier-length}），覆盖自动判断
+     */
+    public void setMaxIdentifierLength(int limit) {
+        this.maxIdentifierLength = limit;
+    }
+
+    /**
+     * 标识符是否超出目标库长度限制
+     */
+    public boolean identifierTooLong(String name) {
+        int limit = maxIdentifierLength();
+        return limit > 0 && dialect.identifierLength(name) > limit;
+    }
+
     @Override
     public void close() {
+        for (Clob clob : lobs) {
+            try {
+                clob.free();
+            } catch (Exception ignore) {
+            }
+        }
+        lobs.clear();
         try {
             connectionObj.close();
         } catch (Exception e) {

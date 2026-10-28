@@ -371,9 +371,10 @@ public class EeLogManage {
     /* ------------------------------------------------------------------ 清理 */
 
     /**
-     * 每天凌晨按“操作日志保留时间”（basic.logLiveTime，天，默认 30）删除过期日志
+     * 每天凌晨按“操作日志保留时间”（basic.logLiveTime，天，默认 30）删除过期日志；
+     * 执行时间可用 {@code dataease.ee.log.clean-cron} 调整
      */
-    @Scheduled(cron = "0 23 2 * * ?")
+    @Scheduled(cron = "${dataease.ee.log.clean-cron:0 23 2 * * ?}")
     public void cleanExpired() {
         try {
             int days = settingManage.getInt("basic.logLiveTime", 30);

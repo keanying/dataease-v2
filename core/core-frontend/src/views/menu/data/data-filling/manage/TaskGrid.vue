@@ -644,7 +644,7 @@ const subTaskRef = ref();
                 <el-icon
                   @click="showLogDetail(scope.row)"
                   class="error-info"
-                  v-if="scope.row.lastExecStatus === 3"
+                  v-if="scope.row.lastExecStatus === 2 || scope.row.lastExecStatus === 3"
                 >
                   <icon name="icon-maybe_outlined">
                     <iconMaybe_outlined class="svg-icon" />

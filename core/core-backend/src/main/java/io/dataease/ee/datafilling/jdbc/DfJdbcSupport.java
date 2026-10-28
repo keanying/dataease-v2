@@ -19,6 +19,7 @@ import io.dataease.utils.BeanUtils;
 import io.dataease.utils.LogUtil;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
@@ -27,7 +28,7 @@ import java.util.Map;
 
 /**
  * 打开填报存储/选项数据源的 JDBC 会话，选择 DDL 生成器。
- * <p>内置支持的存储类型：mysql、mariadb、pg、kingbase、sqlServer、oracle、dm（达梦，需安装达梦数据源插件）；
+ * <p>内置支持的存储类型：mysql、mariadb、pg、kingbase、sqlServer、oracle、dm（达梦，内置数据源 {@code io.dataease.ee.datasource.dm}）；
  * 其他类型需由数据填报插件（{@link ExtDDLProviderFactory}）提供。</p>
  */
 @Component
@@ -40,6 +41,12 @@ public class DfJdbcSupport {
     private final Map<String, ExtDDLProvider> builtin;
 
     private final SqlServerExtDDLProvider sqlServerProvider;
+
+    /**
+     * 表名/列名/索引名最大长度（0 表示按驱动与数据库版本自动判断）。例如 Oracle 12.2+ 但 COMPATIBLE 低于 12.2 时设为 30
+     */
+    @Value("${dataease.ee.data-filling.max-identifier-length:0}")
+    private int maxIdentifierLength;
 
     public DfJdbcSupport(@Lazy DataSourceManage dataSourceManage,
                          @Qualifier("mysqlExtDDLProvider") ExtDDLProvider mysqlProvider,
@@ -108,6 +115,9 @@ public class DfJdbcSupport {
             DEException.throwException(Translator.get("ee_df_datasource_connect_failed"));
         }
         DfSession session = new DfSession(obj, ds.getType());
+        if (maxIdentifierLength > 0) {
+            session.setMaxIdentifierLength(maxIdentifierLength);
+        }
         try {
             initSession(session, ds);
         } catch (RuntimeException e) {

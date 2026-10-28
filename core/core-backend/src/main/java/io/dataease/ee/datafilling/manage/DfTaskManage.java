@@ -485,20 +485,30 @@ public class DfTaskManage {
 
     public String logMsg(ReportInstanceMsgRequest request) {
         if (request == null || request.getTaskId() == null) {
-            return null;
+            return "";
         }
         DfTask task = task(request.getTaskId());
         access.require(task.getFormId(), EeConstants.WEIGHT_READ);
         QDfSubTask q = QDfSubTask.dfSubTask;
-        // 失败信息，或成功下发但消息渠道发送有问题时记录的提示
+        // 指定的或最近一次下发：失败信息、消息渠道发送问题，或成功/执行中的说明（任务列表成功时也显示日志入口）
         DfSubTask sub = queryFactory.selectFrom(q)
-                .where(request.getInstanceId() != null ? q.id.eq(request.getInstanceId()) : q.taskId.eq(task.getId()),
-                        q.errorMsg.isNotNull())
-                .orderBy(q.createTime.desc()).fetchFirst();
-        if (sub != null && StringUtils.isNotBlank(sub.getErrorMsg())) {
+                .where(request.getInstanceId() != null ? q.id.eq(request.getInstanceId()) : q.taskId.eq(task.getId()))
+                .orderBy(q.createTime.desc(), q.id.desc()).fetchFirst();
+        if (sub == null) {
+            return StringUtils.defaultString(task.getErrorMsg());
+        }
+        if (StringUtils.isNotBlank(sub.getErrorMsg())) {
             return sub.getErrorMsg();
         }
-        return task.getErrorMsg();
+        Long time = sub.getStartTime() != null ? sub.getStartTime() : sub.getCreateTime();
+        String at = time == null ? "" : new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date(time));
+        if (Objects.equals(sub.getExecStatus(), DfConstants.EXEC_RUNNING)) {
+            return Translator.get("ee_df_task_log_running", at);
+        }
+        if (Objects.equals(sub.getExecStatus(), DfConstants.EXEC_SUCCESS)) {
+            return Translator.get("ee_df_task_log_success", at);
+        }
+        return StringUtils.defaultString(task.getErrorMsg());
     }
 
     // ------------------------------------------------------------------ sub task

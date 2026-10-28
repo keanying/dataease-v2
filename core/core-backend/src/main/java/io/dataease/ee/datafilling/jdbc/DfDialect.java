@@ -2,9 +2,12 @@ package io.dataease.ee.datafilling.jdbc;
 
 import org.apache.commons.lang3.StringUtils;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.Types;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 按数据库产品区分的标识符引用、分页、空值绑定与比较表达式
@@ -96,6 +99,10 @@ public class DfDialect {
         return kind == Kind.ORACLE;
     }
 
+    public boolean isDm() {
+        return kind == Kind.DM;
+    }
+
     public boolean isSqlServer() {
         return kind == Kind.SQLSERVER;
     }
@@ -127,13 +134,60 @@ public class DfDialect {
     }
 
     /**
-     * 用于 =、IN、DISTINCT、ORDER BY 的列表达式：Oracle/达梦的 CLOB 取前 1000 个字符比较
+     * Oracle/达梦的 CLOB 列：不能直接用于 =、IN、DISTINCT、ORDER BY
      */
-    public String comparable(String quotedColumn, Integer jdbcType) {
-        if (isOracleLike() && jdbcType != null && (jdbcType == Types.CLOB || jdbcType == Types.NCLOB)) {
+    public boolean isLob(Integer jdbcType) {
+        return isOracleLike() && jdbcType != null && (jdbcType == Types.CLOB || jdbcType == Types.NCLOB);
+    }
+
+    /**
+     * 只用于 DISTINCT、ORDER BY 的列表达式：Oracle/达梦不能对 CLOB 去重或排序，只能取前 1000 个字符
+     * （前 1000 个字符相同的不同长文本在选项列表中会合并为一项）。比较条件请使用 {@link #compare}。
+     */
+    public String sortable(String quotedColumn, Integer jdbcType) {
+        if (isLob(jdbcType)) {
             return "DBMS_LOB.SUBSTR(" + quotedColumn + ", 1000, 1)";
         }
         return quotedColumn;
+    }
+
+    /**
+     * 比较条件（含一个 {@code ?} 占位符），op 为 =、<>、<、<=、>、>=。
+     * <p>Oracle/达梦的 CLOB 使用 {@code DBMS_LOB.COMPARE(col, ?) op 0} 精确比较全文，参数需以 {@link #lobParam} 绑定；
+     * 列为 NULL 时 COMPARE 返回 NULL，条件为假，与普通列的 =、<> 语义一致。</p>
+     */
+    public String compare(String quotedColumn, Integer jdbcType, String op) {
+        if (isLob(jdbcType)) {
+            return "DBMS_LOB.COMPARE(" + quotedColumn + ", ?) " + op + " 0";
+        }
+        return quotedColumn + " " + op + " ?";
+    }
+
+    /**
+     * IN / NOT IN 条件，count 个占位符；CLOB 列展开为多个精确比较的 OR
+     */
+    public String in(String quotedColumn, Integer jdbcType, int count, boolean not) {
+        List<String> parts = new ArrayList<>();
+        if (isLob(jdbcType)) {
+            for (int i = 0; i < count; i++) {
+                parts.add(compare(quotedColumn, jdbcType, "="));
+            }
+            return (not ? "NOT " : "") + "(" + String.join(" OR ", parts) + ")";
+        }
+        for (int i = 0; i < count; i++) {
+            parts.add("?");
+        }
+        return quotedColumn + (not ? " NOT IN (" : " IN (") + String.join(", ", parts) + ")";
+    }
+
+    /**
+     * 与 {@link #compare}、{@link #in} 配套的参数：CLOB 列的比较值以 CLOB 绑定（不受 VARCHAR2 4000 字节限制）
+     */
+    public Object lobParam(Object value, Integer jdbcType) {
+        if (isLob(jdbcType) && value != null) {
+            return new DfLob(String.valueOf(value));
+        }
+        return value;
     }
 
     /**
@@ -143,13 +197,32 @@ public class DfDialect {
         if (isOracleLike() || !isString(jdbcType)) {
             return quotedColumn + " IS NULL";
         }
-        return "(" + quotedColumn + " IS NULL OR " + comparable(quotedColumn, jdbcType) + " = '')";
+        return "(" + quotedColumn + " IS NULL OR " + quotedColumn + " = '')";
     }
 
     public String notEmptyCondition(String quotedColumn, Integer jdbcType) {
         if (isOracleLike() || !isString(jdbcType)) {
             return quotedColumn + " IS NOT NULL";
         }
-        return "(" + quotedColumn + " IS NOT NULL AND " + comparable(quotedColumn, jdbcType) + " <> '')";
+        return "(" + quotedColumn + " IS NOT NULL AND " + quotedColumn + " <> '')";
+    }
+
+    /**
+     * 标识符长度的计量方式：Oracle、PostgreSQL、达梦按 UTF-8 字节计，其他按字符计
+     */
+    public int identifierLength(String name) {
+        if (name == null) {
+            return 0;
+        }
+        if (kind == Kind.ORACLE || kind == Kind.PG || kind == Kind.DM) {
+            return name.getBytes(StandardCharsets.UTF_8).length;
+        }
+        return name.length();
+    }
+
+    /**
+     * 以 CLOB 绑定的字符串参数
+     */
+    public record DfLob(String value) {
     }
 }

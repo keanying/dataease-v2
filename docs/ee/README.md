@@ -99,6 +99,8 @@ java -jar core/core-backend/target/CoreApplication.jar
 | `dataease.appearance.max-image-size` | `10485760` | 外观图片大小上限（字节） |
 | `dataease.embedded.limit` | `0` | 嵌入式应用数量上限，0 不限 |
 | `dataease.embedded.origin-check` | `true` | 嵌入式 token 跨站请求是否校验 `Origin` 在应用域名内 |
+| `dataease.ee.log.clean-cron` | `0 23 2 * * ?` | 按“操作日志保留时间”（`basic.logLiveTime`，天）清理过期操作日志的时间 |
+| `dataease.ee.data-filling.max-identifier-length` | `0` | 数据填报表名/列名/索引名长度上限，0 按驱动与数据库版本自动判断（如 Oracle 12.2+ 但 `COMPATIBLE` 低于 12.2 时设为 30） |
 
 ## 4.1 外部调用凭证
 
@@ -200,6 +202,12 @@ Keycloak 作为 IdP 时加密算法固定为 rsa-oaep-mgf1p + aes128-cbc，其�
 
 平台未配置或未启用时，该渠道记为“不可用”写入任务日志，其他渠道照常发送。新增渠道只需注册一个 `EeNotifyChannel` Bean。
 
+`CommunicateApi.send(MessageDTO)`（Java 调用，HTTP `/communicate/send` 仅系统管理员）按 `messageEnum` 分发到 `EeMessageChannel`：
+`WEBHOOK`、`INNER`（空操作），以及 `EeNotifyMessageChannel` 承担的 `EMAIL`、`WECOM`、`DINGTALK`、`LARK`、`LARKSUITE`
+和三种群消息——它把消息转换为 `EeNotifyMessage` 后交给上表的同名渠道发送，不另行实现。`recipientList` 为邮箱 / 平台用户 ID / 群 ID，
+`uid:<用户ID>`（邮件也接受纯数字）表示取该用户的邮箱或绑定账号；`content` 为 UTF-8 HTML，`messageFileList` / `fileList` 作为附件。
+部分接收人缺少地址时其余照常发送，再以异常列出缺少地址的接收人。
+
 页头消息角标（`/msg-center/count`）为全部 `EeMsgCountProvider` 之和；目前数据填报的待填报任务数由 `DfMsgCountProvider` 提供。
 
 ## 8. 报告截图服务
@@ -211,10 +219,25 @@ Keycloak 作为 IdP 时加密算法固定为 rsa-oaep-mgf1p + aes128-cbc，其�
 
 ## 9. 数据填报
 
-* 存储数据源：MySQL / MariaDB、PostgreSQL / Kingbase、SQL Server、Oracle（12c+）、达梦（未实测）以及内置引擎；
+* 存储数据源：MySQL / MariaDB、PostgreSQL / Kingbase、SQL Server、Oracle（12c+）、达梦（DM8，内置数据源，见下）以及内置引擎；
   安装了数据填报插件的类型优先使用插件。其他类型不显示“启用数据填报”开关，创建表单时提示不支持。
+* Oracle / 达梦的 CLOB 列（多行文本、多选等）：等于 / 不等 / IN / NOT IN / 区间条件用 `DBMS_LOB.COMPARE(col, ?)` 精确比较全文，
+  比较值以 CLOB 绑定；只有选项列表的去重与排序取前 1000 个字符（前 1000 个字符相同的长文本会合并为一个选项）。
+  超过 4000 字符的文本以临时 CLOB 绑定写入，不受 VARCHAR2 / PL/SQL 32K 限制（已验证 100 KB）。
+* 表名、列名、索引名按目标库的标识符长度校验（Oracle、PostgreSQL、达梦按 UTF-8 字节计；Oracle 12.2 前为 30），超长时提示缩短；
+  删除字段时列改名为 `del_<字段ID>`，超出长度限制时改用 `del_<36 进制雪花ID>`（约 16 个字符）。
 * 删除表单（或目录）时，仅当数据表由表单创建、无其他表单引用且没有数据时才删除物理表，否则保留并记录日志；
   新建表单的表名已存在时提示更换表名或绑定已有表。
 * 填报任务下发后按任务的通知方式（站内、邮件、企业微信、钉钉、飞书、国际飞书）发送，邮件逐个收件人发送；
   渠道不可用、收件人无地址等问题记录在子任务日志中，不影响下发。
 * 可选配置 `dataease.data-filling.base-url`：设置后通知正文附带填报页面链接（`#/msg/msg-fill`）。
+* 任务列表在最近一次下发成功或失败时都显示日志入口；日志为最近一次下发的失败原因、消息发送问题或成功说明。
+
+### 9.1 达梦数据源
+
+社区版核心只把 `dm` 当作插件类型。`io.dataease.ee.datasource.dm` 提供内置实现（`DmDatasourceProvider`，启动后注册到
+`ProviderFactory`；已安装第三方达梦插件时以插件为准），使用驱动目录中的 `DmJdbcDriver18.jar`：
+主机 / 端口 / 用户名 / 密码 / 模式（或 `jdbc:dm:` 连接串），连接后 `SET SCHEMA`；模式、表（含视图）、字段与主键通过
+`ALL_USERS`、`ALL_TABLES`、`ALL_VIEWS`、`ALL_TAB_COLUMNS`、`ALL_CONSTRAINTS` 等字典视图读取（`DmDictionary`，
+驱动元数据需要 SYSOBJECTS 等系统表权限，普通用户没有）；查询按 Oracle 方言生成 SQL 后在达梦执行，不支持与其他数据源跨源关联。
+前端数据源类型列表（OLTP）中显示“DM”。注意达梦 8 的 `SELECT DISTINCT ... ORDER BY ... DESC` 会忽略 DESC，去重请用 GROUP BY。

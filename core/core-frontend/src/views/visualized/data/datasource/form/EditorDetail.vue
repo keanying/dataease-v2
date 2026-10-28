@@ -378,7 +378,7 @@ const setRules = () => {
     'configuration.sshKey': [{ validator: validateSshkey, trigger: 'blur' }]
   }
   if (
-    ['oracle', 'sqlServer', 'pg', 'kingbase', 'gaussdb', 'redshift', 'db2'].includes(
+    ['oracle', 'sqlServer', 'pg', 'kingbase', 'gaussdb', 'redshift', 'db2', 'dm'].includes(
       form.value.type
     )
   ) {
@@ -1189,7 +1189,7 @@ defineExpose({
           <el-form-item
             :label="t('datasource.data_base')"
             prop="configuration.dataBase"
-            v-if="form.configuration.urlType !== 'jdbcUrl' && form.type !== 'es'"
+            v-if="form.configuration.urlType !== 'jdbcUrl' && form.type !== 'es' && form.type !== 'dm'"
           >
             <el-input
               v-model="form.configuration.dataBase"
@@ -1281,7 +1281,7 @@ defineExpose({
           </el-form-item>
           <el-form-item
             v-if="
-              ['oracle', 'sqlServer', 'pg', 'kingbase', 'gaussdb', 'redshift', 'db2'].includes(
+              ['oracle', 'sqlServer', 'pg', 'kingbase', 'gaussdb', 'redshift', 'db2', 'dm'].includes(
                 form.type
               )
             "

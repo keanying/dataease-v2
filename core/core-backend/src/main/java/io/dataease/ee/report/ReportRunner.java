@@ -84,13 +84,18 @@ public class ReportRunner {
 
     private final ObjectProvider<WsService> wsServiceProvider;
 
+    private final ObjectProvider<ReportManage> reportManageProvider;
+
+    private final ReportFilterResolver filterResolver;
+
     public ReportRunner(XpackReportTaskRepository taskRepository, XpackReportInstanceRepository instanceRepository,
                         JPAQueryFactory queryFactory, TransactionTemplate transactionTemplate,
                         EePermissionManage permissionManage, EeTokenManage tokenManage,
                         EeScreenshotClient screenshotClient, EeNotifyDispatcher dispatcher,
                         DataVisualizationInfoRepository visualizationRepository,
                         @Lazy ChartViewManege chartViewManege, @Lazy ChartDataManage chartDataManage,
-                        @Lazy DeTaskExecutor deTaskExecutor, ObjectProvider<WsService> wsServiceProvider) {
+                        @Lazy DeTaskExecutor deTaskExecutor, ObjectProvider<WsService> wsServiceProvider,
+                        ObjectProvider<ReportManage> reportManageProvider, ReportFilterResolver filterResolver) {
         this.taskRepository = taskRepository;
         this.instanceRepository = instanceRepository;
         this.queryFactory = queryFactory;
@@ -104,6 +109,8 @@ public class ReportRunner {
         this.chartDataManage = chartDataManage;
         this.deTaskExecutor = deTaskExecutor;
         this.wsServiceProvider = wsServiceProvider;
+        this.reportManageProvider = reportManageProvider;
+        this.filterResolver = filterResolver;
     }
 
     /**
@@ -145,6 +152,13 @@ public class ReportRunner {
                 outcome = new Outcome(false, true, Translator.get("ee_report_exec_error") + "\n" + ExceptionUtils.getStackTrace(e));
             }
             finish(task, instance, outcome, triggerType);
+            if (outcome.resourceDeleted()) {
+                // 仪表板/大屏已删除：停止任务，避免后续调度反复失败
+                ReportManage manage = reportManageProvider.getIfAvailable();
+                if (manage != null) {
+                    manage.stopForDeletedResource(task, false);
+                }
+            }
         } finally {
             V3UserUtil.clear();
             org.springframework.context.i18n.LocaleContextHolder.resetLocaleContext();
@@ -237,7 +251,8 @@ public class ReportRunner {
         }
         DataVisualizationInfo dv = task.getRid() == null ? null : visualizationRepository.findById(task.getRid()).orElse(null);
         if (dv == null || Boolean.TRUE.equals(dv.getDeleteFlag())) {
-            return new Outcome(false, false, Translator.get("ee_report_resource_not_exist"));
+            return new Outcome(false, false, Translator.get("ee_report_resource_not_exist") + "\n"
+                    + Translator.get("ee_report_stopped_resource_deleted"), true);
         }
         EeRecipients recipients = recipients(task);
         List<String> lines = new ArrayList<>();
@@ -393,9 +408,11 @@ public class ReportRunner {
         List<Long> viewIds = ReportConstants.longs(task.getViewIds());
         if (!viewIds.isEmpty()) {
             List<ReportFileUtils.SheetData> sheets = new ArrayList<>();
+            // 报告设置的查询条件默认值，与截图预览页面一样作用于图表数据
+            Map<String, com.fasterxml.jackson.databind.JsonNode> reportFilters = filterResolver.reportFilters(task);
             for (Long viewId : viewIds) {
                 try {
-                    ReportFileUtils.SheetData sheet = chartSheet(task, viewId);
+                    ReportFileUtils.SheetData sheet = chartSheet(task, dv, reportFilters, viewId);
                     if (sheet != null) {
                         sheets.add(sheet);
                     }
@@ -417,7 +434,8 @@ public class ReportRunner {
     }
 
     @SuppressWarnings("unchecked")
-    private ReportFileUtils.SheetData chartSheet(XpackReportTask task, Long viewId) throws Exception {
+    private ReportFileUtils.SheetData chartSheet(XpackReportTask task, DataVisualizationInfo dv,
+                                                 Map<String, com.fasterxml.jackson.databind.JsonNode> reportFilters, Long viewId) throws Exception {
         ChartViewDTO view = chartViewManege.getDetails(viewId, "core");
         if (view == null || !Objects.equals(view.getSceneId(), task.getRid())) {
             throw new IllegalStateException(Translator.get("ee_report_chart_not_exist"));
@@ -425,7 +443,7 @@ public class ReportRunner {
         ChartExtRequest extRequest = new ChartExtRequest();
         extRequest.setGoPage(1L);
         extRequest.setPageSize(50000L);
-        extRequest.setFilter(new ArrayList<>());
+        extRequest.setFilter(new ArrayList<>(filterResolver.filters(dv, reportFilters, viewId)));
         if (Objects.equals(task.getViewDataRange(), 0)) {
             // 全部数据
             view.setResultMode(ChartConstants.VIEW_RESULT_MODE.ALL);
@@ -447,6 +465,10 @@ public class ReportRunner {
         final List<String> errors = new ArrayList<>();
     }
 
-    private record Outcome(boolean success, boolean retryable, String message) {
+    private record Outcome(boolean success, boolean retryable, String message, boolean resourceDeleted) {
+
+        Outcome(boolean success, boolean retryable, String message) {
+            this(success, retryable, message, false);
+        }
     }
 }

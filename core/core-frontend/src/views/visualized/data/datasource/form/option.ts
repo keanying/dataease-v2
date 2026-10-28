@@ -68,6 +68,12 @@ export const dsTypes = [
     extraParams: ''
   },
   {
+    type: 'dm',
+    name: 'DM',
+    catalog: 'OLTP',
+    extraParams: ''
+  },
+  {
     type: 'gaussdb',
     name: 'GaussDB',
     catalog: 'OLTP',

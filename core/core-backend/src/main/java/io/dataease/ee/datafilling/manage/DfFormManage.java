@@ -230,6 +230,7 @@ public class DfFormManage {
             if (!useExists) {
                 checkColumns(fields, Collections.emptyList(), DfConstants.DEFAULT_PK);
                 ExtDDLProvider ddl = jdbcSupport.requireDdl(session);
+                checkIdentifiers(session, table, fields, indexes);
                 if (session.tableExists(table)) {
                     DEException.throwException(Translator.get("ee_df_table_exists", table));
                 }
@@ -297,6 +298,7 @@ public class DfFormManage {
                         DEException.throwException(Translator.get("ee_df_column_duplicate", col));
                     }
                 }
+                checkIdentifiers(session, null, toCreate, indexes);
                 if (!toCreate.isEmpty()) {
                     ExtDDLProvider ddl = jdbcSupport.requireDdl(session);
                     session.execute(ddl.addTableColumnSql(table, toCreate, new ArrayList<>()));
@@ -386,6 +388,7 @@ public class DfFormManage {
         }
         boolean useExistsForm = Boolean.TRUE.equals(form.getUseExistsTable());
         List<ExtTableField> toRename = new ArrayList<>();
+        Map<ExtTableField, ObjectNode> renameMappings = new IdentityHashMap<>();
         for (ExtTableField f : stored) {
             if (f.isRemoved() || StringUtils.isBlank(f.getId()) || incomingIds.contains(f.getId())) {
                 continue;
@@ -416,6 +419,7 @@ public class DfFormManage {
                     mapping.setType(io.dataease.ee.datafilling.ddl.DfDDLSupport.inferType(f));
                 }
                 toRename.add(f);
+                renameMappings.put(f, m);
             }
             result.add(node);
         }
@@ -462,6 +466,8 @@ public class DfFormManage {
                         create.add(f);
                     }
                 }
+                checkIdentifiers(session, null, create, newIndexes);
+                shortenDeletedNames(session, toRename, renameMappings, existing.keySet());
                 if (!toRename.isEmpty() || !create.isEmpty()) {
                     ExtDDLProvider ddl = jdbcSupport.requireDdl(session);
                     if (!dropIndexes.isEmpty()) {
@@ -530,6 +536,68 @@ public class DfFormManage {
     private String deletedName(String id, String suffix) {
         String base = StringUtils.replace(id, "-", "_");
         return StringUtils.left("del_" + base, 60 - suffix.length()) + suffix;
+    }
+
+    /**
+     * 删除字段的列名（{@code del_<字段ID>}，40 个字符）超过目标库标识符长度（如 Oracle 12.2 之前为 30）时，
+     * 改用 {@code del_<36 进制雪花 ID>}（约 16 个字符），并保证与表中现有列不重名
+     */
+    private void shortenDeletedNames(DfSession session, List<ExtTableField> toRename, Map<ExtTableField, ObjectNode> nodes,
+                                     Set<String> existingLower) {
+        Set<String> used = new HashSet<>(existingLower);
+        for (ExtTableField f : toRename) {
+            ExtTableField.ExtTableFieldMapping mapping = f.getSettings().getMapping();
+            ObjectNode m = nodes.get(f);
+            boolean range = StringUtils.equals(f.getType(), "dateRange");
+            boolean tooLong = range ? session.identifierTooLong(mapping.getColumnName1()) || session.identifierTooLong(mapping.getColumnName2())
+                    : session.identifierTooLong(mapping.getColumnName());
+            if (!tooLong) {
+                continue;
+            }
+            String base;
+            do {
+                base = "del_" + Long.toString(IDUtils.snowID(), 36);
+            } while (used.contains(base.toLowerCase()) || used.contains((base + "_1").toLowerCase()));
+            if (range) {
+                mapping.setColumnName1(base + "_1");
+                mapping.setColumnName2(base + "_2");
+                used.add(mapping.getColumnName1().toLowerCase());
+                used.add(mapping.getColumnName2().toLowerCase());
+                if (m != null) {
+                    m.put("columnName1", mapping.getColumnName1());
+                    m.put("columnName2", mapping.getColumnName2());
+                }
+            } else {
+                mapping.setColumnName(base);
+                used.add(base.toLowerCase());
+                if (m != null) {
+                    m.put("columnName", base);
+                }
+            }
+        }
+    }
+
+    /**
+     * 按目标库的标识符长度限制校验表名、新增列名与新增索引名
+     */
+    private void checkIdentifiers(DfSession session, String table, List<ExtTableField> newFields, List<ExtIndexField> newIndexes) {
+        int limit = session.maxIdentifierLength();
+        if (limit <= 0) {
+            return;
+        }
+        if (table != null && session.identifierTooLong(table)) {
+            DEException.throwException(Translator.get("ee_df_identifier_too_long", Translator.get("ee_df_identifier_table"), table, String.valueOf(limit)));
+        }
+        for (String col : columnNames(newFields == null ? List.of() : newFields)) {
+            if (session.identifierTooLong(col)) {
+                DEException.throwException(Translator.get("ee_df_identifier_too_long", Translator.get("ee_df_identifier_column"), col, String.valueOf(limit)));
+            }
+        }
+        for (ExtIndexField ix : newIndexes == null ? List.<ExtIndexField>of() : newIndexes) {
+            if (ix != null && StringUtils.isNotBlank(ix.getName()) && session.identifierTooLong(ix.getName())) {
+                DEException.throwException(Translator.get("ee_df_identifier_too_long", Translator.get("ee_df_identifier_index"), ix.getName(), String.valueOf(limit)));
+            }
+        }
     }
 
     /**
@@ -968,8 +1036,11 @@ public class DfFormManage {
         return t;
     }
 
+    /**
+     * 名称是否合法（不含引号等特殊字符）；长度上限按目标库校验，见 {@link #checkIdentifiers}
+     */
     private boolean validIdentifier(String name) {
-        return name.length() <= 64 && !StringUtils.containsAny(name, '`', '"', '[', ']', ';', '\'', '\\', '\n', '\r', '\t')
+        return name.length() <= 128 && !StringUtils.containsAny(name, '`', '"', '[', ']', ';', '\'', '\\', '\n', '\r', '\t')
                 && !StringUtils.startsWith(name, " ") && !StringUtils.endsWith(name, " ");
     }
 
