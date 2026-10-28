@@ -27,7 +27,7 @@ import java.util.Map;
 
 /**
  * 打开填报存储/选项数据源的 JDBC 会话，选择 DDL 生成器。
- * <p>内置支持的存储类型：mysql、mariadb、pg、kingbase、sqlServer、oracle、dm（达梦，需安装达梦数据源插件）；
+ * <p>内置支持的存储类型：mysql、mariadb、pg、kingbase、sqlServer、oracle、dm（达梦，内置数据源 {@code io.dataease.ee.datasource.dm}）；
  * 其他类型需由数据填报插件（{@link ExtDDLProviderFactory}）提供。</p>
  */
 @Component

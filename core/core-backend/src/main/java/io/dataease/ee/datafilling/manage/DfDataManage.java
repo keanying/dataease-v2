@@ -11,6 +11,7 @@ import io.dataease.ee.datafilling.dao.entity.DfForm;
 import io.dataease.ee.datafilling.dao.entity.QDfCommitRecord;
 import io.dataease.ee.datafilling.dao.repo.DfCommitRecordRepository;
 import io.dataease.ee.datafilling.jdbc.DfJdbcSupport;
+import io.dataease.ee.datafilling.jdbc.DfDialect;
 import io.dataease.ee.datafilling.jdbc.DfSession;
 import io.dataease.ee.permissions.auth.EePermissionManage;
 import io.dataease.exception.DEException;
@@ -201,7 +202,7 @@ public class DfDataManage {
                 }
                 String col = session.q(column);
                 Integer jdbcType = types.get(column.toLowerCase());
-                String cmp = session.dialect().comparable(col, jdbcType);
+                DfDialect dialect = session.dialect();
                 switch (term) {
                     case "null" -> conditions.add(col + " IS NULL");
                     case "not_null" -> conditions.add(col + " IS NOT NULL");
@@ -220,12 +221,12 @@ public class DfDataManage {
                             continue;
                         }
                         if (!DfValues.isEmpty(values.get(0))) {
-                            conditions.add(cmp + " >= ?");
-                            params.add(searchValue(values.get(0), type));
+                            conditions.add(dialect.compare(col, jdbcType, ">="));
+                            params.add(dialect.lobParam(searchValue(values.get(0), type), jdbcType));
                         }
                         if (!DfValues.isEmpty(values.get(1))) {
-                            conditions.add(cmp + " <= ?");
-                            params.add(searchValue(values.get(1), type));
+                            conditions.add(dialect.compare(col, jdbcType, "<="));
+                            params.add(dialect.lobParam(searchValue(values.get(1), type), jdbcType));
                         }
                     }
                     case "in", "not in", "not_in" -> {
@@ -245,12 +246,10 @@ public class DfDataManage {
                             }
                             conditions.add((not ? "NOT " : "") + "(" + String.join(" OR ", ors) + ")");
                         } else {
-                            List<String> marks = new ArrayList<>();
                             for (Object v : values) {
-                                marks.add("?");
-                                params.add(searchValue(v, type));
+                                params.add(dialect.lobParam(searchValue(v, type), jdbcType));
                             }
-                            conditions.add(cmp + (not ? " NOT IN (" : " IN (") + String.join(", ", marks) + ")");
+                            conditions.add(dialect.in(col, jdbcType, values.size(), not));
                         }
                     }
                     default -> {
@@ -265,8 +264,8 @@ public class DfDataManage {
                             case "ge" -> ">=";
                             default -> "=";
                         };
-                        conditions.add(cmp + " " + op + " ?");
-                        params.add(searchValue(p.getValue(), type));
+                        conditions.add(dialect.compare(col, jdbcType, op));
+                        params.add(dialect.lobParam(searchValue(p.getValue(), type), jdbcType));
                     }
                 }
             }
@@ -445,9 +444,10 @@ public class DfDataManage {
                 }
                 if (s.isUnique() && provided && !DfValues.isEmpty(v)) {
                     List<Object> params = new ArrayList<>();
-                    params.add(v);
+                    Integer colType = types.get(c.name().toLowerCase());
+                    params.add(session.dialect().lobParam(v, colType));
                     String sql = "SELECT COUNT(1) FROM " + session.table(meta.table()) + " WHERE "
-                            + session.dialect().comparable(session.q(c.name()), types.get(c.name().toLowerCase())) + " = ?";
+                            + session.dialect().compare(session.q(c.name()), colType, "=");
                     if (pk != null) {
                         sql += " AND " + session.q(meta.pk()) + " <> ?";
                         params.add(DfValues.pkValue(pk, types.get(meta.pk().toLowerCase())));
@@ -674,7 +674,8 @@ public class DfDataManage {
             List<Object> params = new ArrayList<>();
             Map<String, Integer> types = session.columnTypes(table);
             String where = treeWhere(session, types, tree, params);
-            String col = session.dialect().comparable(session.q(column), types.get(column.toLowerCase()));
+            // CLOB 不能 DISTINCT / ORDER BY，Oracle/达梦取前 1000 个字符
+            String col = session.dialect().sortable(session.q(column), types.get(column.toLowerCase()));
             String sql = "SELECT DISTINCT " + col + " FROM " + session.table(table) + " WHERE " + session.q(column) + " IS NOT NULL"
                     + (StringUtils.isBlank(where) ? "" : " AND (" + where + ")")
                     + " ORDER BY " + col + (StringUtils.equalsIgnoreCase(order, "desc") ? " DESC" : " ASC");
@@ -722,11 +723,12 @@ public class DfDataManage {
             }
             valid.forEach(e -> select.add(session.q(e.getFieldName())));
             List<Object> params = new ArrayList<>();
-            params.add(value);
             Map<String, Integer> types = session.columnTypes(table);
+            Integer colType = types.get(column.toLowerCase());
+            params.add(session.dialect().lobParam(value, colType));
             String where = treeWhere(session, types, tree, params);
             String sql = "SELECT " + String.join(", ", select) + " FROM " + session.table(table) + " WHERE "
-                    + session.dialect().comparable(session.q(column), types.get(column.toLowerCase())) + " = ?"
+                    + session.dialect().compare(session.q(column), colType, "=")
                     + (StringUtils.isBlank(where) ? "" : " AND (" + where + ")");
             List<List<String>> rows = session.queryStrings(sql, params, 1);
             List<String> row = rows.isEmpty() ? null : rows.getFirst();
@@ -762,19 +764,15 @@ public class DfDataManage {
             }
             String raw = session.q(item.getFieldId());
             Integer jdbcType = types.get(item.getFieldId().toLowerCase());
-            String col = session.dialect().comparable(raw, jdbcType);
+            DfDialect dialect = session.dialect();
             String term = StringUtils.defaultIfBlank(item.getTerm(), "eq");
             if (StringUtils.equals(item.getFilterType(), "enum")) {
                 List<String> values = item.getEnumValue();
                 if (CollectionUtils.isEmpty(values)) {
                     continue;
                 }
-                List<String> marks = new ArrayList<>();
-                values.forEach(v -> {
-                    marks.add("?");
-                    params.add(v);
-                });
-                parts.add(col + (StringUtils.equals(term, "not in") ? " NOT IN (" : " IN (") + String.join(", ", marks) + ")");
+                values.forEach(v -> params.add(dialect.lobParam(v, jdbcType)));
+                parts.add(dialect.in(raw, jdbcType, values.size(), StringUtils.equals(term, "not in")));
                 continue;
             }
             String value = item.getValue();
@@ -796,21 +794,17 @@ public class DfDataManage {
                     if (values.isEmpty()) {
                         continue;
                     }
-                    List<String> marks = new ArrayList<>();
-                    values.forEach(v -> {
-                        marks.add("?");
-                        params.add(v);
-                    });
-                    parts.add(col + (term.equals("in") ? " IN (" : " NOT IN (") + String.join(", ", marks) + ")");
+                    values.forEach(v -> params.add(dialect.lobParam(v, jdbcType)));
+                    parts.add(dialect.in(raw, jdbcType, values.size(), !term.equals("in")));
                 }
                 case "between" -> {
                     String[] range = StringUtils.defaultString(value).split(",");
                     if (range.length < 2) {
                         continue;
                     }
-                    parts.add(col + " BETWEEN ? AND ?");
-                    params.add(range[0].trim());
-                    params.add(range[1].trim());
+                    parts.add("(" + dialect.compare(raw, jdbcType, ">=") + " AND " + dialect.compare(raw, jdbcType, "<=") + ")");
+                    params.add(dialect.lobParam(range[0].trim(), jdbcType));
+                    params.add(dialect.lobParam(range[1].trim(), jdbcType));
                 }
                 default -> {
                     String op = switch (term) {
@@ -821,8 +815,8 @@ public class DfDataManage {
                         case "ge" -> ">=";
                         default -> "=";
                     };
-                    parts.add(col + " " + op + " ?");
-                    params.add(value);
+                    parts.add(dialect.compare(raw, jdbcType, op));
+                    params.add(dialect.lobParam(value, jdbcType));
                 }
             }
         }
