@@ -1,9 +1,11 @@
 package io.dataease.ee.sync.engine;
 
 import io.dataease.ee.sync.SyncConstants;
+import io.dataease.ee.sync.provider.DorisStreamLoader;
+import io.dataease.ee.sync.provider.DorisSyncProvider;
 import io.dataease.ee.sync.provider.SyncDialect;
-import io.dataease.ee.sync.provider.SyncJdbcSupport;
 import io.dataease.ee.sync.provider.SyncProviderDefaults;
+import io.dataease.ee.sync.provider.SyncRecordSource;
 import io.dataease.extensions.sync.model.TableFieldDTO;
 import io.dataease.extensions.sync.model.task.Source;
 import io.dataease.extensions.sync.model.task.Target;
@@ -29,7 +31,8 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /**
- * 单次同步执行：源端流式读取 → 目标端分批写入。
+ * 单次同步执行：源端流式读取（JDBC，或 {@link SyncRecordSource} 如 Elasticsearch）→ 目标端分批写入
+ * （JDBC 批量，或 Doris Stream Load）。
  *
  * <ul>
  *     <li>全量：写入临时表 like_xxx，成功后替换目标表，失败时目标表保持不变；</li>
@@ -88,7 +91,7 @@ public class SyncCopier {
         this.deadline = deadline;
     }
 
-    public Result run() throws SQLException {
+    public Result run() throws Exception {
         List<TableFieldDTO> fields = target.getFieldList().stream()
                 .filter(f -> StringUtils.isNotBlank(f.getFieldName()))
                 .toList();
@@ -99,7 +102,7 @@ public class SyncCopier {
         boolean increment = SyncConstants.SWITCH_ON.equalsIgnoreCase(target.getIncrementSync());
         double tolerance = faultTolerance();
 
-        try (Connection src = sourceDialect.open(sourceCfg); Connection tgt = targetDialect.open(targetCfg)) {
+        try (Connection tgt = targetDialect.open(targetCfg)) {
             boolean exists = targetDialect.tableExists(tgt, targetCfg, table);
             String writeTable;
             boolean replace = false;
@@ -135,67 +138,21 @@ public class SyncCopier {
                 replace = true;
             }
 
-            String selectSql = sourceDialect.selectSql(sourceCfg, source, sourceCols, incrementSourceCol);
-            log.accept(Translator.get("ee_sync_log_query", selectSql));
-            String writeSql;
-            String deleteSql = null;
-            boolean upsert = increment && exists && !keys.isEmpty();
-            if (upsert) {
-                writeSql = targetDialect.upsertSql(tgt, targetCfg, writeTable, targetCols, keys);
-                if (writeSql == null) {
-                    writeSql = targetDialect.insertSql(targetCfg, writeTable, targetCols);
-                    deleteSql = "DELETE FROM " + targetDialect.qualified(targetCfg, writeTable) + " WHERE "
-                            + keys.stream().map(k -> targetDialect.quote(k) + " = ?").collect(Collectors.joining(" AND "));
-                }
-            } else {
-                writeSql = targetDialect.insertSql(targetCfg, writeTable, targetCols);
-            }
-            int[] keyIndexes = keys.stream().mapToInt(targetCols::indexOf).toArray();
-
-            long rows = 0;
-            long failed = 0;
             try {
-                boolean autoCommit = tgt.getAutoCommit();
-                tgt.setAutoCommit(false);
-                // PostgreSQL 等驱动仅在非自动提交下按 fetchSize 流式读取
-                src.setAutoCommit(false);
-                try (PreparedStatement read = src.prepareStatement(selectSql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY);
-                     PreparedStatement write = tgt.prepareStatement(writeSql);
-                     PreparedStatement delete = deleteSql == null ? null : tgt.prepareStatement(deleteSql)) {
-                    context.bind(read);
-                    read.setFetchSize(sourceDialect.fetchSize());
-                    int remaining = remainingSeconds();
-                    if (remaining > 0) {
-                        read.setQueryTimeout(remaining);
+                long rows;
+                long failed;
+                try (SyncRowWriter writer = writer(tgt, writeTable, targetCols, keys, increment && exists, tolerance)) {
+                    Batch batch = new Batch(writer, tolerance);
+                    if (sourceDialect instanceof SyncRecordSource recordSource) {
+                        log.accept(Translator.get("ee_sync_log_query",
+                                recordSource.describe(sourceCfg, source, sourceCols, incrementSourceCol, incrementValue)));
+                        recordSource.read(sourceCfg, source, sourceCols, incrementSourceCol, incrementValue, context, batch::add);
+                    } else {
+                        readJdbc(sourceCols, incrementSourceCol, incrementValue, batch);
                     }
-                    if (incrementValue != null) {
-                        read.setObject(1, incrementValue);
-                    }
-                    try (ResultSet rs = read.executeQuery()) {
-                        int columnCount = targetCols.size();
-                        List<Object[]> batch = new ArrayList<>(SyncConstants.BATCH_SIZE);
-                        while (rs.next()) {
-                            Object[] row = new Object[columnCount];
-                            for (int i = 0; i < columnCount; i++) {
-                                row[i] = sourceDialect.readValue(rs, i + 1);
-                            }
-                            batch.add(row);
-                            if (batch.size() >= SyncConstants.BATCH_SIZE) {
-                                failed += flush(tgt, write, delete, keyIndexes, batch, tolerance > 0);
-                                rows += batch.size();
-                                batch.clear();
-                                checkpoint(rows, failed, tolerance);
-                            }
-                        }
-                        if (!batch.isEmpty()) {
-                            failed += flush(tgt, write, delete, keyIndexes, batch, tolerance > 0);
-                            rows += batch.size();
-                            batch.clear();
-                        }
-                    }
-                } finally {
-                    context.bind(null);
-                    tgt.setAutoCommit(autoCommit);
+                    batch.flush();
+                    rows = batch.rows;
+                    failed = batch.failed;
                 }
                 checkFailures(rows, failed, tolerance);
                 if (context.isCancelled()) {
@@ -208,7 +165,7 @@ public class SyncCopier {
                     created = true;
                 }
                 return new Result(rows - failed, failed, created);
-            } catch (RuntimeException | SQLException e) {
+            } catch (Exception e) {
                 if (replace) {
                     try {
                         targetDialect.dropTable(tgt, targetCfg, writeTable);
@@ -220,6 +177,120 @@ public class SyncCopier {
                 }
                 throw e;
             }
+        }
+    }
+
+    /**
+     * JDBC 源端流式读取
+     */
+    private void readJdbc(List<String> sourceCols, String incrementSourceCol, Object incrementValue, Batch batch) throws Exception {
+        String selectSql = sourceDialect.selectSql(sourceCfg, source, sourceCols, incrementSourceCol);
+        log.accept(Translator.get("ee_sync_log_query", selectSql));
+        int columnCount = sourceCols.size();
+        try (Connection src = sourceDialect.open(sourceCfg)) {
+            // PostgreSQL 等驱动仅在非自动提交下按 fetchSize 流式读取
+            src.setAutoCommit(false);
+            try (PreparedStatement read = src.prepareStatement(selectSql, ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+                context.bind(read);
+                read.setFetchSize(sourceDialect.fetchSize());
+                int remaining = remainingSeconds();
+                if (remaining > 0) {
+                    read.setQueryTimeout(remaining);
+                }
+                if (incrementValue != null) {
+                    read.setObject(1, incrementValue);
+                }
+                try (ResultSet rs = read.executeQuery()) {
+                    while (rs.next()) {
+                        Object[] row = new Object[columnCount];
+                        for (int i = 0; i < columnCount; i++) {
+                            row[i] = sourceDialect.readValue(rs, i + 1);
+                        }
+                        batch.add(row);
+                    }
+                }
+            } finally {
+                context.bind(null);
+                try {
+                    src.rollback();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * 目标端写入器：Doris 优先 Stream Load，未启用 / 不可用时 JDBC 批量
+     */
+    private SyncRowWriter writer(Connection tgt, String writeTable, List<String> targetCols, List<String> keys, boolean upsert,
+                                 double tolerance) throws SQLException {
+        if (targetDialect instanceof DorisSyncProvider doris) {
+            DorisStreamLoader loader = doris.streamLoader(tgt, targetCfg);
+            if (loader != null) {
+                return new StreamLoadRowWriter(loader, writeTable, targetCols, tolerance, context, log,
+                        () -> jdbcWriter(tgt, writeTable, targetCols, keys, upsert, tolerance));
+            }
+        }
+        return jdbcWriter(tgt, writeTable, targetCols, keys, upsert, tolerance);
+    }
+
+    private SyncRowWriter jdbcWriter(Connection tgt, String writeTable, List<String> targetCols, List<String> keys, boolean upsert,
+                                     double tolerance) throws SQLException {
+        String writeSql;
+        String deleteSql = null;
+        if (upsert && !keys.isEmpty()) {
+            writeSql = targetDialect.upsertSql(tgt, targetCfg, writeTable, targetCols, keys);
+            if (writeSql == null) {
+                writeSql = targetDialect.insertSql(targetCfg, writeTable, targetCols);
+                deleteSql = "DELETE FROM " + targetDialect.qualified(targetCfg, writeTable) + " WHERE "
+                        + keys.stream().map(k -> targetDialect.quote(k) + " = ?").collect(Collectors.joining(" AND "));
+            }
+        } else {
+            writeSql = targetDialect.insertSql(targetCfg, writeTable, targetCols);
+        }
+        int[] keyIndexes = keys.stream().mapToInt(targetCols::indexOf).toArray();
+        return new JdbcRowWriter(tgt, targetDialect, writeSql, deleteSql, keyIndexes, tolerance > 0, context, log);
+    }
+
+    /**
+     * 读取缓冲：按写入器的行数 / 字节数分批写入，并检查终止、超时与容错
+     */
+    private class Batch {
+        private final SyncRowWriter writer;
+        private final double tolerance;
+        private final List<Object[]> buffer = new ArrayList<>();
+        private long bytes = 0;
+        private long rows = 0;
+        private long failed = 0;
+
+        Batch(SyncRowWriter writer, double tolerance) {
+            this.writer = writer;
+            this.tolerance = tolerance;
+        }
+
+        void add(Object[] row) throws Exception {
+            buffer.add(row);
+            long limit = writer.batchBytes();
+            if (limit > 0) {
+                bytes += StreamLoadRowWriter.estimate(row);
+            }
+            if (buffer.size() >= writer.batchRows() || limit > 0 && bytes >= limit) {
+                flush();
+                checkpoint(rows, failed, tolerance);
+            }
+        }
+
+        void flush() throws Exception {
+            if (buffer.isEmpty()) {
+                return;
+            }
+            if (context.isCancelled()) {
+                throw new TerminatedException();
+            }
+            failed += writer.write(buffer);
+            rows += buffer.size();
+            buffer.clear();
+            bytes = 0;
         }
     }
 
@@ -238,80 +309,6 @@ public class SyncCopier {
         }
         if (!tgt.getAutoCommit()) {
             tgt.commit();
-        }
-    }
-
-    /**
-     * 写入一批；容错模式下批量失败后逐行写入并统计失败行
-     */
-    private long flush(Connection tgt, PreparedStatement write, PreparedStatement delete, int[] keyIndexes,
-                       List<Object[]> batch, boolean tolerant) throws SQLException {
-        try {
-            if (delete != null) {
-                for (Object[] row : batch) {
-                    for (int i = 0; i < keyIndexes.length; i++) {
-                        bind(delete, i + 1, row[keyIndexes[i]]);
-                    }
-                    delete.addBatch();
-                }
-                delete.executeBatch();
-            }
-            for (Object[] row : batch) {
-                for (int i = 0; i < row.length; i++) {
-                    bind(write, i + 1, row[i]);
-                }
-                write.addBatch();
-            }
-            write.executeBatch();
-            tgt.commit();
-            return 0;
-        } catch (SQLException e) {
-            safeRollback(tgt);
-            write.clearBatch();
-            if (delete != null) {
-                delete.clearBatch();
-            }
-            if (!tolerant || context.isCancelled()) {
-                throw e;
-            }
-            log.accept(Translator.get("ee_sync_log_batch_failed", SyncJdbcSupport.rootMessage(e)));
-            long failed = 0;
-            for (Object[] row : batch) {
-                try {
-                    if (delete != null) {
-                        for (int i = 0; i < keyIndexes.length; i++) {
-                            bind(delete, i + 1, row[keyIndexes[i]]);
-                        }
-                        delete.executeUpdate();
-                    }
-                    for (int i = 0; i < row.length; i++) {
-                        bind(write, i + 1, row[i]);
-                    }
-                    write.executeUpdate();
-                    tgt.commit();
-                } catch (SQLException rowError) {
-                    safeRollback(tgt);
-                    failed++;
-                }
-            }
-            return failed;
-        }
-    }
-
-    private void bind(PreparedStatement ps, int index, Object value) throws SQLException {
-        if (value == null) {
-            ps.setNull(index, targetDialect.nullType());
-        } else if (value instanceof LocalDateTime ldt) {
-            ps.setTimestamp(index, Timestamp.valueOf(ldt));
-        } else {
-            ps.setObject(index, value);
-        }
-    }
-
-    private static void safeRollback(Connection connection) {
-        try {
-            connection.rollback();
-        } catch (Exception ignored) {
         }
     }
 

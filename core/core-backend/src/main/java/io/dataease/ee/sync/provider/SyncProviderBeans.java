@@ -41,7 +41,7 @@ public class SyncProviderBeans {
 
     @Bean("elasticsearchSourceProvider")
     public SyncProvider elasticsearchSourceProvider() {
-        return new UnsupportedSyncProvider("elasticsearch");
+        return new EsSyncProvider();
     }
 
     @Bean("mySQLSinkProvider")
