@@ -83,10 +83,14 @@
 mvn -B clean package -DskipTests
 # 前端已构建过、只改了后端时跳过 npm（复用 core/core-frontend/dist）
 mvn -B package -DskipTests -Dskip.npm -Dskip.installnodenpm
+# 使用本机 Node（20+，npm 在 PATH 中），不下载 Node：
+mvn -B clean package -DskipTests -Dlocal.node
 # 国内下载 Node 慢时：-Dnode.download.root=https://npmmirror.com/mirrors/node/；自定义输出目录：-Dde.dist.dir=D:/release
 java -jar dist/CoreApplication.jar
 ```
 
+* 不加 `-Dlocal.node` 时，前端由 frontend-maven-plugin 安装 Node v23.11.0 到 `core/core-frontend/node`（安装包缓存在本地 Maven 仓库，只下载一次）。
+* Windows 下 git 默认以 CRLF 检出，前端 Prettier 配置为 `endOfLine: 'auto'`，构建时的 lint 不会因换行符失败。
 * `standalone` 构建排除社区版替补实现 `io/dataease/substitute/**`；`desktop` 构建不包含企业版 `io/dataease/ee/**`。
 * 依赖 `repository.fit2cloud.com` 中的定制 Calcite（`calcite-core:1.35.36:de`）。
 * 默认管理员：`admin`，初始密码沿用社区版 `substitule.json` 中的密码，否则为 `dataease.default-pwd` 或 `DataEase@123456`。

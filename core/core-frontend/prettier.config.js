@@ -15,6 +15,8 @@ module.exports = {
      // 单个参数的箭头函数不加括号 x => x
     arrowParens: 'avoid',     
     // 对象大括号内两边是否加空格 { a:0 }
-    bracketSpacing: true,      
+    bracketSpacing: true,
+    // 换行符跟随文件本身（Windows 下 git 默认检出为 CRLF，避免构建时 lint 报 Delete ␍）
+    endOfLine: 'auto',
   }
   

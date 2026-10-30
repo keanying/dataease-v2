@@ -19,6 +19,7 @@
     <frontend-maven-plugin.version>1.9.1</frontend-maven-plugin.version>
     <!-- Node 下载地址，国内可用 -Dnode.download.root=https://npmmirror.com/mirrors/node/ -->
     <node.download.root>https://nodejs.org/dist/</node.download.root>
+    <npm.executable>npm</npm.executable>
   </properties>
 
   <build>
@@ -66,6 +67,88 @@
   </build>
 
   <profiles>
+    <!--
+      使用本机已安装的 Node / npm 构建前端，不再下载 Node：mvn clean package -DskipTests -Dlocal.node
+      需要本机 Node 20 及以上，npm 在 PATH 中。
+    -->
+    <profile>
+      <id>local-node</id>
+      <activation>
+        <property>
+          <name>local.node</name>
+        </property>
+      </activation>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>com.github.eirslett</groupId>
+            <artifactId>frontend-maven-plugin</artifactId>
+            <version>${frontend-maven-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>install node and npm</id>
+                <phase>none</phase>
+              </execution>
+              <execution>
+                <id>npm install</id>
+                <phase>none</phase>
+              </execution>
+              <execution>
+                <id>npm run build</id>
+                <phase>none</phase>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <executions>
+              <execution>
+                <id>local npm install</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${npm.executable}</executable>
+                  <workingDirectory>${project.basedir}</workingDirectory>
+                  <arguments>
+                    <argument>install</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+              <execution>
+                <id>local npm run build</id>
+                <phase>generate-resources</phase>
+                <goals>
+                  <goal>exec</goal>
+                </goals>
+                <configuration>
+                  <executable>${npm.executable}</executable>
+                  <workingDirectory>${project.basedir}</workingDirectory>
+                  <arguments>
+                    <argument>run</argument>
+                    <argument>build:distributed</argument>
+                  </arguments>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+    <!-- Windows 下 npm 的可执行文件是 npm.cmd -->
+    <profile>
+      <id>npm-windows</id>
+      <activation>
+        <os>
+          <family>windows</family>
+        </os>
+      </activation>
+      <properties>
+        <npm.executable>npm.cmd</npm.executable>
+      </properties>
+    </profile>
     <!-- 默认 mvn clean 保留 node_modules，避免每次都重新安装前端依赖；需要彻底重装时加 -Pfrontend-full-clean -->
     <profile>
       <id>frontend-full-clean</id>
