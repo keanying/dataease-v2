@@ -79,10 +79,12 @@
 > 早于此改动克隆的仓库，如遇子模块报错，执行 `git submodule deinit -f de-xpack` 后删除 `de-xpack` 目录与 `.git/modules/de-xpack` 即可。
 
 ```bash
-mvn -B install -DskipTests                                  # SDK（含 foundation）
-mvn -B -f core/core-backend/pom.xml compile -Pstandalone    # 后端编译
-mvn -B -f core/core-backend/pom.xml package -Pstandalone -DskipTests
-java -jar core/core-backend/target/CoreApplication.jar
+# 一条命令构建全部（SDK → 前端 → 后端，默认 standalone），可运行 jar 统一输出到根目录 dist/CoreApplication.jar
+mvn -B clean package -DskipTests
+# 前端已构建过、只改了后端时跳过 npm（复用 core/core-frontend/dist）
+mvn -B package -DskipTests -Dskip.npm -Dskip.installnodenpm
+# 国内下载 Node 慢时：-Dnode.download.root=https://npmmirror.com/mirrors/node/；自定义输出目录：-Dde.dist.dir=D:/release
+java -jar dist/CoreApplication.jar
 ```
 
 * `standalone` 构建排除社区版替补实现 `io/dataease/substitute/**`；`desktop` 构建不包含企业版 `io/dataease/ee/**`。

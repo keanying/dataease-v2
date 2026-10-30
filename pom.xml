@@ -8,8 +8,10 @@
     <version>${dataease.version}</version>
     <packaging>pom</packaging>
 
+    <!-- 在根目录执行 mvn clean package 即可依次构建 SDK、前端、后端，产物统一复制到根目录 dist/ -->
     <modules>
         <module>sdk</module>
+        <module>core</module>
     </modules>
     <parent>
         <groupId>org.springframework.boot</groupId>
@@ -325,6 +327,19 @@
             </plugins>
         </pluginManagement>
         <plugins>
+            <!-- mvn clean 时一并清理根目录 dist/（不继承到子模块，避免误删前端的 dist 产物） -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <filesets>
+                        <fileset>
+                            <directory>${project.basedir}/dist</directory>
+                        </fileset>
+                    </filesets>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>flatten-maven-plugin</artifactId>

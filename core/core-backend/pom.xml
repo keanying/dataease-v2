@@ -12,6 +12,11 @@
     <packaging>jar</packaging>
     <artifactId>core-backend</artifactId>
 
+    <properties>
+        <!-- 可运行 jar 的统一输出目录（仓库根目录 dist/），可用 -Dde.dist.dir=... 覆盖 -->
+        <de.dist.dir>${project.basedir}/../../dist</de.dist.dir>
+    </properties>
+
     <dependencies>
         <dependency>
             <groupId>commons-net</groupId>
@@ -394,6 +399,28 @@
                         <goals>
                             <goal>repackage</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- 打包完成后把可运行 jar 复制到仓库根目录 dist/（须声明在 spring-boot-maven-plugin 之后，保证复制的是 repackage 后的 jar） -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>copy-jar-to-dist</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <property name="de.dist.path" location="${de.dist.dir}"/>
+                                <mkdir dir="${de.dist.path}"/>
+                                <copy file="${project.build.directory}/CoreApplication.jar" todir="${de.dist.path}" overwrite="true"/>
+                                <echo message="DataEase jar: ${de.dist.path}${file.separator}CoreApplication.jar"/>
+                            </target>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

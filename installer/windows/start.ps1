@@ -41,10 +41,12 @@ if ([int]$Matches[1] -lt 21) { Fail "需要 JDK 21，当前是：$javaVersion" }
 Ok "Java：$javaVersion"
 
 # 2. jar 及其中的前端页面
-$jar = Join-Path $Root "core\core-backend\target\CoreApplication.jar"
+$jar = Join-Path $Root "dist\CoreApplication.jar"
+if (-not (Test-Path $jar)) { $jar = Join-Path $Root "core\core-backend\target\CoreApplication.jar" }
 if (-not (Test-Path $jar)) {
-    Fail "找不到 $jar，请先构建：前端 npm run build:distributed，再 cd core; mvn clean package -Pstandalone -DskipTests"
+    Fail "找不到 CoreApplication.jar，请先在仓库根目录执行：mvn clean package -DskipTests"
 }
+Ok "jar：$jar"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [System.IO.Compression.ZipFile]::OpenRead($jar)
 try {

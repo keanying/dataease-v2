@@ -17,30 +17,12 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <frontend-maven-plugin.version>1.9.1</frontend-maven-plugin.version>
+    <!-- Node 下载地址，国内可用 -Dnode.download.root=https://npmmirror.com/mirrors/node/ -->
+    <node.download.root>https://nodejs.org/dist/</node.download.root>
   </properties>
 
   <build>
     <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-clean-plugin</artifactId>
-        <configuration>
-          <filesets>
-            <!--<fileset>
-              <directory>dist</directory>
-            </fileset>-->
-            <fileset>
-                <directory>node_modules</directory>
-            </fileset>
-            <fileset>
-                <directory>./</directory>
-                <includes>
-                    <include>*-lock.json</include>
-                </includes>
-            </fileset>
-          </filesets>
-        </configuration>
-      </plugin>
       <plugin>
         <groupId>com.github.eirslett</groupId>
         <artifactId>frontend-maven-plugin</artifactId>
@@ -55,6 +37,7 @@
             <configuration>
               <nodeVersion>v23.11.0</nodeVersion>
               <npmVersion>10.9.2</npmVersion>
+              <nodeDownloadRoot>${node.download.root}</nodeDownloadRoot>
             </configuration>
           </execution>
           <!--前端组件有更新需要放开-->
@@ -81,6 +64,34 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <!-- 默认 mvn clean 保留 node_modules，避免每次都重新安装前端依赖；需要彻底重装时加 -Pfrontend-full-clean -->
+    <profile>
+      <id>frontend-full-clean</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-clean-plugin</artifactId>
+            <configuration>
+              <filesets>
+                <fileset>
+                  <directory>node_modules</directory>
+                </fileset>
+                <fileset>
+                  <directory>./</directory>
+                  <includes>
+                    <include>*-lock.json</include>
+                  </includes>
+                </fileset>
+              </filesets>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 
 
 </project>
