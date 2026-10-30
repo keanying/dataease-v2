@@ -35,7 +35,11 @@ function Ok($msg) {
 # 1. JDK 21
 $javaCmd = Get-Command java -ErrorAction SilentlyContinue
 if (-not $javaCmd) { Fail "找不到 java，请安装 JDK 21 并加入 PATH" }
-$javaVersion = (& java -version 2>&1 | Select-Object -First 1).ToString()
+# java -version 输出到 stderr；Windows PowerShell 5 在 Stop 模式下会把重定向的 stderr 当成错误中断，这里临时放宽
+$prevPref = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+$javaVersion = "$(& java -version 2>&1 | Select-Object -First 1)"
+$ErrorActionPreference = $prevPref
 if ($javaVersion -notmatch '"(\d+)') { Fail "无法识别 Java 版本：$javaVersion" }
 if ([int]$Matches[1] -lt 21) { Fail "需要 JDK 21，当前是：$javaVersion" }
 Ok "Java：$javaVersion"
@@ -99,6 +103,8 @@ Write-Host "  http://localhost:$Port    账号 admin / 密码 DataEase@123456" -
 Write-Host "  日志目录：$base\logs\dataease   按 Ctrl+C 停止" -ForegroundColor Cyan
 Write-Host ""
 
+# 运行期间 Java 可能向 stderr 输出警告，不应中断脚本
+$ErrorActionPreference = "Continue"
 & java "-Xmx$Xmx" "-Dfile.encoding=UTF-8" -jar $jar `
     "--server.port=$Port" `
     "--spring.datasource.url=$url" `
