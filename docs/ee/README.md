@@ -75,6 +75,9 @@
 
 ## 3. 构建与运行
 
+> 本分支已移除闭源 `de-xpack` 子模块，克隆时不需要也不要使用 `--recurse-submodules`。
+> 早于此改动克隆的仓库，如遇子模块报错，执行 `git submodule deinit -f de-xpack` 后删除 `de-xpack` 目录与 `.git/modules/de-xpack` 即可。
+
 ```bash
 mvn -B install -DskipTests                                  # SDK（含 foundation）
 mvn -B -f core/core-backend/pom.xml compile -Pstandalone    # 后端编译
