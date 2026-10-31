@@ -177,9 +177,12 @@ const open = async (oid: string) => {
 };
 
 const loadCandidates = async () => {
-  const res = await sysOrgMemberCandidatesApi({
-    keyword: candidateKeyword.value,
-  });
+  const res = await sysOrgMemberCandidatesApi(
+    {
+      keyword: candidateKeyword.value,
+    },
+    orgId.value,
+  );
   allCandidates.value = res.data || [];
 };
 

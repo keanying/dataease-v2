@@ -4,8 +4,13 @@ export const sysOrgMemberPageApi = (data: any) => {
   return request.post({ url: "/sys/org/member/page", data });
 };
 
-export const sysOrgMemberCandidatesApi = (data: any) => {
-  return request.post({ url: "/sys/org/member/candidates", data });
+// orgId: target org, candidates exclude its existing members (users may belong to several orgs)
+export const sysOrgMemberCandidatesApi = (data: any, orgId?: string) => {
+  return request.post({
+    url: "/sys/org/member/candidates",
+    params: orgId ? { orgId } : undefined,
+    data,
+  });
 };
 
 export const sysOrgMemberRoleOptionsApi = (orgId: string) => {

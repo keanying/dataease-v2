@@ -83,8 +83,8 @@ public class RoleServer implements RoleApi {
             return;
         }
         for (Long uid : request.getUids()) {
-            PerUser user = userManage.require(uid);
-            if (!Objects.equals(user.getDefaultOid(), role.getOid())) {
+            userManage.require(uid);
+            if (!orgManage.isMember(uid, role.getOid())) {
                 DEException.throwException(Translator.get("ee_role_not_in_org"));
             }
             roleManage.mount(uid, role.getOid(), role.getId());
@@ -115,8 +115,12 @@ public class RoleServer implements RoleApi {
             oids.add(request.getOid());
         } else if (request.getUid() != null) {
             PerUser user = userManage.get(request.getUid());
-            if (user != null && user.getDefaultOid() != null) {
-                oids.add(user.getDefaultOid());
+            Long current = V3UserUtil.getOid();
+            if (user != null && current != null && orgManage.isMember(user.getId(), current)
+                    && (!V3UserUtil.isSysAdmin() || V3UserUtil.getProxy().isProxy())) {
+                oids.add(current);
+            } else if (user != null && orgManage.homeOid(user) != null) {
+                oids.add(orgManage.homeOid(user));
             }
         } else if (V3UserUtil.getOid() != null) {
             oids.add(V3UserUtil.getOid());
@@ -135,7 +139,10 @@ public class RoleServer implements RoleApi {
         if (user == null) {
             return new ArrayList<>();
         }
-        List<Long> rids = roleManage.roleIdsOfUser(uid, user.getDefaultOid());
+        // 当前组织内的角色（用户属于当前组织时），否则为主组织内的角色
+        Long current = V3UserUtil.getOid();
+        Long oid = current != null && orgManage.isMember(uid, current) ? current : orgManage.homeOid(user);
+        List<Long> rids = oid == null ? List.of() : roleManage.roleIdsOfUser(uid, oid);
         return rids.stream().map(roleManage::get).filter(Objects::nonNull).map(RoleServer::toVO).toList();
     }
 

@@ -24,8 +24,12 @@ import AiComponent from '@/layout/components/AiComponent.vue'
 import { findBaseParams } from '@/api/aiComponent'
 import AiTips from '@/layout/components/AiTips.vue'
 import DesktopSetting from './DesktopSetting.vue'
+import OrgSwitcher from '@/views/component/switcher/index.vue'
+import { useAppStoreWithOut } from '@/store/modules/app'
+import request from '@/config/axios'
 
 const appearanceStore = useAppearanceStoreWithOut()
+const appStore = useAppStoreWithOut()
 const { push } = useRouter()
 const route = useRoute()
 import { useCache } from '@/hooks/web/useCache'
@@ -82,6 +86,21 @@ const initShowSystem = () => {
   const hasProxyOid = !!userStore.proxyInfo?.proxyOid
   showSystem.value = hasOid || hasProxyOid
 }
+// 组织切换器：用户可切换到 2 个及以上组织时显示（系统管理员可切换到任意组织）
+const showOrgSwitcher = ref(false)
+const initOrgSwitcher = () => {
+  if (desktop || !appStore.getXpackValid) {
+    return
+  }
+  request
+    .post({ url: '/org/lazyMounted', data: {} })
+    .then(res => {
+      showOrgSwitcher.value = (res?.data?.switchable || 0) > 1
+    })
+    .catch(() => {
+      showOrgSwitcher.value = false
+    })
+}
 const initShowMsg = () => {
   showMsg.value = permissionStore.getRouters.some(route => route.path === '/msg')
 }
@@ -130,6 +149,7 @@ onMounted(() => {
   initShowSystem()
   initShowToolbox()
   initShowMsg()
+  initOrgSwitcher()
   initAiBase()
   /* initSqlbot() */
 
@@ -155,6 +175,7 @@ onMounted(() => {
       <HeaderMenuItem v-for="menu in routers" :key="menu.path" :menu="menu"></HeaderMenuItem>
     </el-menu>
     <div class="operate-setting" v-if="!desktop">
+      <OrgSwitcher v-if="showOrgSwitcher" />
       <el-tooltip offset="6" effect="dark" content="SQLBot" placement="bottom">
         <el-icon style="margin: 0 10px" class="ai-icon copilot-icon" v-if="sqlbotEnabled">
           <Icon name="copilot"><logo_sqlbot @click="handleSqlbotClick" class="svg-icon" /></Icon>

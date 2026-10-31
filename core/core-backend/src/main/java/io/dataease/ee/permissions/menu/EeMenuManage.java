@@ -116,7 +116,8 @@ public class EeMenuManage {
 
     private Set<Long> grantedMenuIds(Long uid, Long oid) {
         Set<Long> result = new HashSet<>();
-        Map<Long, Perm> userGrants = permissionManage.grants(EeConstants.SUBJECT_USER, List.of(uid), EeConstants.RT_MENU);
+        // 用户可属于多个组织：用户的直接授权只在授权所属组织内生效
+        Map<Long, Perm> userGrants = oid == null ? Map.of() : permissionManage.grants(EeConstants.SUBJECT_USER, List.of(uid), EeConstants.RT_MENU, oid);
         userGrants.forEach((id, perm) -> {
             if (!perm.isNone()) {
                 result.add(id);

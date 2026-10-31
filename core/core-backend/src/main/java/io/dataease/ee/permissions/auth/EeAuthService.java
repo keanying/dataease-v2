@@ -125,13 +125,20 @@ public class EeAuthService {
         } else {
             QPerUser u = QPerUser.perUser;
             List<PerUser> users = orgIds.isEmpty() ? List.of() : queryFactory.selectFrom(u)
-                    .where(u.defaultOid.in(orgIds), u.id.ne(EeConstants.ADMIN_UID)).orderBy(u.createTime.desc()).fetch();
+                    .where(orgManage.memberOfAny(u.id, orgIds), u.id.ne(EeConstants.ADMIN_UID)).orderBy(u.createTime.desc()).fetch();
+            Map<Long, List<Long>> memberships = orgManage.memberOidsOfUsers(users.stream().map(PerUser::getId).toList());
             for (PerUser user : users) {
-                SubjectNode node = new SubjectNode(user.getId(), user.getDefaultOid(), user.getName(), 0);
+                // 用户可属于多个组织，树中只出现一次：主组织在范围内时挂在主组织下，否则挂在范围内最早加入的组织下
+                List<Long> inScope = memberships.getOrDefault(user.getId(), List.of()).stream().filter(orgIds::contains).toList();
+                if (inScope.isEmpty()) {
+                    continue;
+                }
+                Long userOid = inScope.contains(user.getDefaultOid()) ? user.getDefaultOid() : inScope.getFirst();
+                SubjectNode node = new SubjectNode(user.getId(), userOid, user.getName(), 0);
                 Map<String, Object> attrs = new HashMap<>();
                 attrs.put("account", user.getAccount());
                 node.setAttrs(attrs);
-                orgNodes.get(user.getDefaultOid()).getChildren().add(node);
+                orgNodes.get(userOid).getChildren().add(node);
             }
         }
         List<SubjectNode> roots = new ArrayList<>();
@@ -308,11 +315,13 @@ public class EeAuthService {
         vo.setPermissionOrigins(new ArrayList<>());
         int subjectType = request.getType() == null ? EeConstants.SUBJECT_USER : request.getType();
         Long subjectId = request.getId();
-        Long subjectOid = subjectOid(subjectType, subjectId);
+        Long subjectOid = subjectType == EeConstants.SUBJECT_USER
+                ? userOid(subjectId, system ? request.getOid() : V3UserUtil.getOid()) : subjectOid(subjectType, subjectId);
         if (!system && !Objects.equals(subjectOid, V3UserUtil.getOid())) {
             DEException.throwException(Translator.get("ee_no_permission"));
         }
-        vo.setPermissions(items(permissionManage.grants(subjectType, List.of(subjectId), rtId), subjectOid));
+        vo.setPermissions(items(permissionManage.grants(subjectType, List.of(subjectId), rtId,
+                subjectType == EeConstants.SUBJECT_USER ? subjectOid : null), subjectOid));
         String topRootDirId = system ? String.valueOf(-subjectOid) : "0";
         if (subjectType == EeConstants.SUBJECT_ROLE) {
             PerRole role = roleManage.get(subjectId);
@@ -363,8 +372,23 @@ public class EeAuthService {
             PerRole role = roleManage.get(subjectId);
             return role == null ? null : role.getOid();
         }
-        PerUser user = queryFactory.selectFrom(QPerUser.perUser).where(QPerUser.perUser.id.eq(subjectId)).fetchFirst();
-        return user == null ? null : user.getDefaultOid();
+        return userOid(subjectId, null);
+    }
+
+    /**
+     * 用户在本次授权配置中所处的组织（用户可属于多个组织）：
+     * preferred（是其成员时）> 以组织身份配置时的当前组织（是其成员时）> 主组织 > 最早加入的组织
+     */
+    private Long userOid(Long uid, Long preferred) {
+        if (preferred != null && orgManage.isMember(uid, preferred)) {
+            return preferred;
+        }
+        Long current = V3UserUtil.getOid();
+        if (current != null && (!V3UserUtil.isSysAdmin() || V3UserUtil.getProxy().isProxy()) && orgManage.isMember(uid, current)) {
+            return current;
+        }
+        PerUser user = queryFactory.selectFrom(QPerUser.perUser).where(QPerUser.perUser.id.eq(uid)).fetchFirst();
+        return orgManage.homeOid(user);
     }
 
     @Transactional
@@ -425,6 +449,11 @@ public class EeAuthService {
         }
         Long resourceOid = queryFactory.select(QPerBusiResource.perBusiResource.orgId).from(QPerBusiResource.perBusiResource)
                 .where(QPerBusiResource.perBusiResource.id.eq(resourceId)).fetchFirst();
+        if (subjectType == EeConstants.SUBJECT_USER && resourceOid != null && !Objects.equals(resourceOid, subjectOid)
+                && orgManage.isMember(subjectId, resourceOid) && V3UserUtil.isSysAdmin() && !V3UserUtil.getProxy().isProxy()) {
+            // 系统管理员在全局范围内为多组织用户授予其非主组织的资源
+            subjectOid = resourceOid;
+        }
         if (resourceOid == null || !Objects.equals(resourceOid, subjectOid)) {
             DEException.throwException(Translator.get("ee_no_permission"));
         }
@@ -477,20 +506,20 @@ public class EeAuthService {
             }
             return vo;
         }
-        QPerUser u = QPerUser.perUser;
-        List<PerUser> users = queryFactory.selectFrom(u).where(u.defaultOid.in(orgIds), u.id.ne(EeConstants.ADMIN_UID)).fetch();
+        Set<Long> members = orgManage.memberIds(orgIds);
+        members.remove(EeConstants.ADMIN_UID);
         Map<Long, Perm> userGrants = new HashMap<>();
-        if (!users.isEmpty()) {
+        Map<Long, Long> grantOids = new HashMap<>();
+        if (!members.isEmpty()) {
             QPerAuth a = QPerAuth.perAuth;
+            // 用户的直接授权只在授权所属组织内生效，只列出范围内组织的授权
             for (PerAuth auth : queryFactory.selectFrom(a).where(a.subjectType.eq(EeConstants.SUBJECT_USER),
-                    a.subjectId.in(users.stream().map(PerUser::getId).toList()), a.rtId.eq(rtId), a.resourceId.eq(rid)).fetch()) {
+                    a.subjectId.in(members), a.rtId.eq(rtId), a.resourceId.eq(rid), a.oid.in(orgIds)).fetch()) {
                 userGrants.merge(auth.getSubjectId(), new Perm(auth.getWeight(), auth.getExt()), Perm::merge);
+                grantOids.put(auth.getSubjectId(), auth.getOid());
             }
         }
-        userGrants.forEach((uid, perm) -> {
-            Long userOid = users.stream().filter(user -> user.getId().equals(uid)).map(PerUser::getDefaultOid).findFirst().orElse(oid);
-            vo.getPermissions().add(pi(uid, perm.weight(), perm.ext(), userOid));
-        });
+        userGrants.forEach((uid, perm) -> vo.getPermissions().add(pi(uid, perm.weight(), perm.ext(), grantOids.getOrDefault(uid, oid))));
         for (PerRole role : roles) {
             Perm perm = Boolean.TRUE.equals(role.getRoot()) ? implicitPerm(role, rtId, rid)
                     : permissionManage.grants(EeConstants.SUBJECT_ROLE, List.of(role.getId()), rtId).getOrDefault(rid, Perm.NONE);

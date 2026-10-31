@@ -16,7 +16,7 @@ import org.hibernate.annotations.Comment;
 }, uniqueConstraints = {
         @UniqueConstraint(name = "uk_per_user_role", columnNames = {"uid", "rid"})
 })
-@Comment("用户角色关系，用户属于某组织当且仅当其拥有该组织的角色")
+@Comment("用户角色关系，角色属于组织，用户须为该组织成员（per_user_org）")
 public class PerUserRole {
 
     @Id

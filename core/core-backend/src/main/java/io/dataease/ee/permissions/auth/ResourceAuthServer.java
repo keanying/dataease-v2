@@ -13,6 +13,7 @@ import io.dataease.ee.permissions.dao.entity.PerRole;
 import io.dataease.ee.permissions.dao.entity.PerUser;
 import io.dataease.ee.permissions.dao.entity.QPerUser;
 import io.dataease.ee.permissions.resource.EeBusiResourceManage;
+import io.dataease.ee.permissions.org.EeOrgManage;
 import io.dataease.ee.permissions.role.EeRoleManage;
 import io.dataease.permission.util.V3UserUtil;
 import org.apache.commons.collections4.CollectionUtils;
@@ -37,12 +38,15 @@ public class ResourceAuthServer implements ResourceAuthApi {
 
     private final EeRoleManage roleManage;
 
+    private final EeOrgManage orgManage;
+
     public ResourceAuthServer(JPAQueryFactory queryFactory, EePermissionManage permissionManage, EeBusiResourceManage busiResourceManage,
-                              EeRoleManage roleManage) {
+                              EeRoleManage roleManage, EeOrgManage orgManage) {
         this.queryFactory = queryFactory;
         this.permissionManage = permissionManage;
         this.busiResourceManage = busiResourceManage;
         this.roleManage = roleManage;
+        this.orgManage = orgManage;
     }
 
     @Override
@@ -80,7 +84,7 @@ public class ResourceAuthServer implements ResourceAuthApi {
         }
         int rtId = request.getResourceFlag() == null ? resource.getRtId() : request.getResourceFlag();
         QPerUser q = QPerUser.perUser;
-        for (PerUser user : queryFactory.selectFrom(q).where(q.defaultOid.eq(resource.getOrgId()), q.enable.isTrue()).fetch()) {
+        for (PerUser user : queryFactory.selectFrom(q).where(orgManage.memberOf(q.id, resource.getOrgId()), q.enable.isTrue()).fetch()) {
             if (permissionManage.effective(user.getId(), resource.getOrgId(), rtId, resource.getId()).satisfies(EeConstants.WEIGHT_READ)) {
                 result.add(user.getId());
             }
@@ -102,7 +106,7 @@ public class ResourceAuthServer implements ResourceAuthApi {
             return result;
         }
         QPerUser q = QPerUser.perUser;
-        for (PerUser user : queryFactory.selectFrom(q).where(q.defaultOid.eq(oid)).orderBy(q.createTime.desc()).fetch()) {
+        for (PerUser user : queryFactory.selectFrom(q).where(orgManage.memberOf(q.id, oid)).orderBy(q.createTime.desc()).fetch()) {
             result.add(new SubjectVO(user.getId(), EeConstants.SUBJECT_USER, user.getName(), user.getAccount()));
         }
         return result;

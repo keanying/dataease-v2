@@ -8,6 +8,7 @@ import io.dataease.api.permissions.user.api.UserApi;
 import io.dataease.api.permissions.user.bo.UserOrgItem;
 import io.dataease.api.permissions.user.dto.*;
 import io.dataease.api.permissions.user.vo.*;
+import io.dataease.auth.vo.TokenVO;
 import io.dataease.ee.auth.EeMfaManage;
 import io.dataease.ee.auth.EeTokenManage;
 import io.dataease.ee.auth.LoginServer;
@@ -23,6 +24,7 @@ import io.dataease.model.KeywordRequest;
 import io.dataease.permission.model.V3BaseUser;
 import io.dataease.permission.util.V3UserUtil;
 import io.dataease.result.PageResult;
+import io.dataease.result.ResultCode;
 import io.dataease.utils.IDUtils;
 import io.dataease.utils.IPUtils;
 import io.dataease.utils.ServletUtils;
@@ -30,6 +32,8 @@ import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -108,7 +112,8 @@ public class UserServer implements UserApi {
     private List<UserGridVO> toGrid(List<PerUser> users, Long scopeOid) {
         List<Long> uids = users.stream().map(PerUser::getId).toList();
         Map<Long, List<PerRole>> roles = roleManage.rolesOfUsers(uids);
-        Set<Long> oids = users.stream().map(PerUser::getDefaultOid).filter(Objects::nonNull).collect(Collectors.toSet());
+        Map<Long, List<Long>> memberships = orgManage.memberOidsOfUsers(uids);
+        Set<Long> oids = memberships.values().stream().flatMap(List::stream).collect(Collectors.toSet());
         Map<Long, String> orgNames = new HashMap<>();
         for (Long oid : oids) {
             PerOrg org = orgManage.get(oid);
@@ -140,10 +145,16 @@ public class UserServer implements UserApi {
                         return item;
                     }).toList();
             vo.setRoleItems(new ArrayList<>(roleItems));
-            if (user.getDefaultOid() != null && orgNames.containsKey(user.getDefaultOid())) {
+            // 用户可属于多个组织：主组织在前，组织名以逗号分隔；orgItem.id 为主组织
+            List<Long> userOids = new ArrayList<>(memberships.getOrDefault(user.getId(), Collections.emptyList()));
+            userOids.removeIf(oid -> !orgNames.containsKey(oid) || (scopeOid != null && !scopeOid.equals(oid)));
+            if (!userOids.isEmpty()) {
+                if (user.getDefaultOid() != null && userOids.remove(user.getDefaultOid())) {
+                    userOids.addFirst(user.getDefaultOid());
+                }
                 UserOrgItem orgItem = new UserOrgItem();
-                orgItem.setId(user.getDefaultOid());
-                orgItem.setName(orgNames.get(user.getDefaultOid()));
+                orgItem.setId(userOids.getFirst());
+                orgItem.setName(userOids.stream().map(orgNames::get).collect(Collectors.joining(", ")));
                 vo.setOrgItem(orgItem);
             }
             result.add(vo);
@@ -153,10 +164,26 @@ public class UserServer implements UserApi {
 
     @Override
     public UserFormVO queryById(Long id) {
-        return form(userManage.require(id));
+        PerUser user = userManage.require(id);
+        return form(user, orgScoped() ? currentOid() : orgManage.homeOid(user));
     }
 
-    private UserFormVO form(PerUser user) {
+    /**
+     * 是否以组织身份操作（组织管理员、系统管理员代理组织）：此时用户的组织与角色取当前组织
+     */
+    private boolean orgScoped() {
+        return !sysAdmin() || V3UserUtil.getProxy().isProxy();
+    }
+
+    /**
+     * 用户在 preferred 组织（是其成员时）中的视图，否则为其主组织
+     */
+    private UserFormVO form(PerUser user, Long preferred) {
+        Long oid = preferred != null && orgManage.isMember(user.getId(), preferred) ? preferred : orgManage.homeOid(user);
+        return formIn(user, oid);
+    }
+
+    private UserFormVO formIn(PerUser user, Long oid) {
         UserFormVO vo = new UserFormVO();
         vo.setId(user.getId());
         vo.setAccount(user.getAccount());
@@ -165,10 +192,11 @@ public class UserServer implements UserApi {
         vo.setPhonePrefix(user.getPhonePrefix());
         vo.setPhone(user.getPhone());
         vo.setEnable(user.getEnable());
-        vo.setDefaultOid(user.getDefaultOid());
-        PerOrg org = orgManage.get(user.getDefaultOid());
+        vo.setDefaultOid(oid);
+        PerOrg org = orgManage.get(oid);
         vo.setOrgName(org == null ? null : org.getName());
-        vo.setRoleIds(roleManage.roleIdsOfUser(user.getId(), user.getDefaultOid()).stream().map(String::valueOf).collect(Collectors.toList()));
+        vo.setRoleIds(oid == null ? new ArrayList<>()
+                : roleManage.roleIdsOfUser(user.getId(), oid).stream().map(String::valueOf).collect(Collectors.toList()));
         vo.setMfaEnable(Boolean.TRUE.equals(user.getMfaEnable()));
         vo.setOrigin(user.getOrigin());
         vo.setVariables(userManage.variables().userVariables(user.getId()));
@@ -178,7 +206,7 @@ public class UserServer implements UserApi {
     @Override
     public UserFormVO personInfo() {
         PerUser user = userManage.require(V3UserUtil.getUid());
-        UserFormVO vo = form(user);
+        UserFormVO vo = form(user, currentOid());
         vo.setModel("xpack");
         vo.setIp(IPUtils.get());
         return vo;
@@ -218,9 +246,11 @@ public class UserServer implements UserApi {
 
     @Override
     public void edit(UserEditor editor) {
-        if (!sysAdmin()) {
-            PerUser exist = userManage.require(editor.getId());
-            editor.setDefaultOid(exist.getDefaultOid());
+        if (orgScoped()) {
+            // 组织内编辑：只修改用户在当前组织内的角色，不改变其组织关系
+            editor.setDefaultOid(currentOid());
+            userManage.edit(editor, true);
+            return;
         }
         userManage.edit(editor);
     }
@@ -234,7 +264,23 @@ public class UserServer implements UserApi {
     }
 
     @Override
+    @Transactional
     public void delete(Long id) {
+        deleteOrLeave(id);
+    }
+
+    /**
+     * 以组织身份删除同时属于其他组织的用户时，只把用户移出当前组织；否则删除用户
+     */
+    private void deleteOrLeave(Long id) {
+        Long oid = currentOid();
+        if (orgScoped() && oid != null && orgManage.isMember(id, oid) && orgManage.memberOids(id).size() > 1) {
+            if (EeConstants.ADMIN_UID.equals(id) || id.equals(V3UserUtil.getUid())) {
+                DEException.throwException(Translator.get(EeConstants.ADMIN_UID.equals(id) ? "ee_cannot_operate_admin" : "ee_cannot_operate_self"));
+            }
+            userManage.leaveOrg(id, oid);
+            return;
+        }
         userManage.delete(id);
     }
 
@@ -251,7 +297,7 @@ public class UserServer implements UserApi {
             if (!sysAdmin() && !orgManage.isMember(id, currentOid())) {
                 continue;
             }
-            userManage.delete(id);
+            deleteOrLeave(id);
         }
     }
 
@@ -263,7 +309,7 @@ public class UserServer implements UserApi {
         }
         Set<Long> bound = new HashSet<>(roleManage.userIdsOfRole(role.getId()));
         QPerUser q = QPerUser.perUser;
-        var query = queryFactory.selectFrom(q).where(q.defaultOid.eq(role.getOid()));
+        var query = queryFactory.selectFrom(q).where(orgManage.memberOf(q.id, role.getOid()));
         if (StringUtils.isNotBlank(request.getKeyword())) {
             String keyword = "%" + request.getKeyword().trim().toLowerCase() + "%";
             query.where(q.name.lower().like(keyword).or(q.account.lower().like(keyword)));
@@ -327,7 +373,7 @@ public class UserServer implements UserApi {
             return new ArrayList<>();
         }
         QPerUser q = QPerUser.perUser;
-        return queryFactory.selectFrom(q).where(q.defaultOid.eq(oid)).orderBy(q.createTime.desc()).fetch().stream().map(this::option).toList();
+        return queryFactory.selectFrom(q).where(orgManage.memberOf(q.id, oid)).orderBy(q.createTime.desc()).fetch().stream().map(this::option).toList();
     }
 
     private UserOptionVO option(PerUser user) {
@@ -614,7 +660,7 @@ public class UserServer implements UserApi {
             if (oid == null) {
                 return new ArrayList<>();
             }
-            query.where(q.defaultOid.eq(oid));
+            query.where(orgManage.memberOf(q.id, oid));
         }
         return query.orderBy(q.createTime.desc()).fetch().stream().map(this::option).toList();
     }
@@ -628,7 +674,11 @@ public class UserServer implements UserApi {
             query.where(q.name.lower().like(keyword).or(q.account.lower().like(keyword)));
         }
         if (!sysAdmin()) {
-            query.where(q.defaultOid.eq(currentOid()));
+            Long oid = currentOid();
+            if (oid == null) {
+                return new ArrayList<>();
+            }
+            query.where(orgManage.memberOf(q.id, oid));
         }
         return query.fetch().stream().map(user -> {
             UserItem item = new UserItem();
@@ -649,13 +699,32 @@ public class UserServer implements UserApi {
             oids.addAll(orgManage.selfAndChildren(oid));
         }
         QPerUser q = QPerUser.perUser;
-        return queryFactory.selectFrom(q).where(q.defaultOid.in(oids)).fetch().stream().map(user -> {
+        return queryFactory.selectFrom(q).where(orgManage.memberOfAny(q.id, oids)).fetch().stream().map(user -> {
             UserItem item = new UserItem();
             item.setId(user.getId());
             item.setName(user.getName());
             item.setAccount(user.getAccount());
             return item;
         }).toList();
+    }
+
+    /**
+     * 切换当前组织：必须是该组织成员（系统管理员可切换到任意组织），记录为最近切换的组织并签发新 token
+     */
+    @PostMapping("/switch/{oid}")
+    public TokenVO switchOrg(@PathVariable("oid") Long oid) {
+        Long uid = V3UserUtil.getUid();
+        if (uid == null) {
+            DEException.throwException(ResultCode.USER_NOT_LOGGED_IN.code(), "token is empty");
+        }
+        if (!orgManage.exists(oid)) {
+            DEException.throwException(Translator.get("ee_org_not_exist"));
+        }
+        if (!sysAdmin() && !orgManage.isMember(uid, oid)) {
+            DEException.throwException(Translator.get("ee_no_permission"));
+        }
+        userManage.switchOrg(uid, oid);
+        return tokenManage.generate(uid, oid);
     }
 
     @Override

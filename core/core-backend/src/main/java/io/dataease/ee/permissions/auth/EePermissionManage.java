@@ -22,7 +22,7 @@ import java.util.*;
  *     <li>系统管理员、当前组织管理员（拥有组织内置的 typeCode=9 角色）拥有组织内全部资源的全部权限；</li>
  *     <li>组织内置角色对组织内全部资源有隐式授权：数据分析师(7) 为管理，普通用户(0) 为查看（数据源为使用），
  *     导出位为仪表板/大屏 111、数据集 1；</li>
- *     <li>其余为显式授权：用户直接授权 ∪ 其在当前组织内全部角色的授权，按等级取最大、导出位取并集；</li>
+ *     <li>其余为显式授权：用户在当前组织内的直接授权（per_auth.oid）∪ 其在当前组织内全部角色的授权，按等级取最大、导出位取并集；</li>
  *     <li>资源ID 0 表示根目录，对其拥有管理权限才能在根目录下创建资源；</li>
  *     <li>资源必须属于当前组织（per_busi_resource.org_id）。</li>
  * </ul>
@@ -118,12 +118,23 @@ public class EePermissionManage {
      * 主体的直接授权
      */
     public Map<Long, Perm> grants(int subjectType, Collection<Long> subjectIds, int rtId) {
+        return grants(subjectType, subjectIds, rtId, null);
+    }
+
+    /**
+     * 主体在某组织内的直接授权（per_auth.oid = oid）；oid 为空时不限组织
+     */
+    public Map<Long, Perm> grants(int subjectType, Collection<Long> subjectIds, int rtId, Long oid) {
         if (CollectionUtils.isEmpty(subjectIds)) {
             return Collections.emptyMap();
         }
         QPerAuth q = QPerAuth.perAuth;
-        List<PerAuth> list = queryFactory.selectFrom(q)
-                .where(q.subjectType.eq(subjectType), q.subjectId.in(subjectIds), q.rtId.eq(rtId)).fetch();
+        var query = queryFactory.selectFrom(q)
+                .where(q.subjectType.eq(subjectType), q.subjectId.in(subjectIds), q.rtId.eq(rtId));
+        if (oid != null) {
+            query.where(q.oid.eq(oid));
+        }
+        List<PerAuth> list = query.fetch();
         Map<Long, Perm> result = new HashMap<>();
         for (PerAuth auth : list) {
             Perm perm = new Perm(auth.getWeight() == null ? 0 : auth.getWeight(), auth.getExt() == null ? 0 : auth.getExt());
@@ -136,7 +147,11 @@ public class EePermissionManage {
      * 用户 + 其组织内角色 的显式授权
      */
     public Map<Long, Perm> explicit(Long uid, Long oid, int rtId) {
-        Map<Long, Perm> result = new HashMap<>(grants(EeConstants.SUBJECT_USER, List.of(uid), rtId));
+        if (oid == null) {
+            return new HashMap<>();
+        }
+        // 用户可属于多个组织：用户的直接授权（含根目录授权）只在授权所属组织内生效
+        Map<Long, Perm> result = new HashMap<>(grants(EeConstants.SUBJECT_USER, List.of(uid), rtId, oid));
         grants(EeConstants.SUBJECT_ROLE, roleIds(uid, oid), rtId).forEach((id, perm) -> result.merge(id, perm, Perm::merge));
         return result;
     }

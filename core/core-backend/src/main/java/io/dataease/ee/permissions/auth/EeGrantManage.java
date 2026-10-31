@@ -44,8 +44,13 @@ public class EeGrantManage {
         }
         long now = System.currentTimeMillis();
         if (exist != null) {
-            queryFactory.update(q).set(q.weight, weight).set(q.ext, ext).set(q.updateTime, now)
-                    .where(q.id.eq(exist.getId())).execute();
+            var update = queryFactory.update(q).set(q.weight, weight).set(q.ext, ext).set(q.updateTime, now)
+                    .where(q.id.eq(exist.getId()));
+            if (oid != null) {
+                // 用户可属于多个组织：同一主体对同一资源只有一条授权（唯一约束），以最近一次授权所在组织为准
+                update.set(q.oid, oid);
+            }
+            update.execute();
             return;
         }
         PerAuth auth = new PerAuth();

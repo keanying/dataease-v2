@@ -157,7 +157,7 @@ public class EeDatapermSupport {
         boolean valid;
         if (DatapermConstants.TARGET_USER.equals(type)) {
             PerUser user = perUserRepository.findById(targetId).orElse(null);
-            valid = user != null && !EeConstants.ADMIN_UID.equals(user.getId()) && (oid == null || oid.equals(user.getDefaultOid()));
+            valid = user != null && !EeConstants.ADMIN_UID.equals(user.getId()) && (oid == null || orgManage.isMember(user.getId(), oid));
         } else {
             PerRole role = perRoleRepository.findById(targetId).orElse(null);
             valid = role != null && (oid == null || oid.equals(role.getOid()));
@@ -165,6 +165,10 @@ public class EeDatapermSupport {
         if (!valid) {
             DEException.throwException(Translator.get("ee_dataperm_target_invalid"));
         }
+    }
+
+    public boolean isOrgMember(Long uid, Long oid) {
+        return orgManage.isMember(uid, oid);
     }
 
     public Map<Long, String> userNames(Collection<Long> ids) {
@@ -329,11 +333,15 @@ public class EeDatapermSupport {
         vo.setEnable(user.getEnable());
         vo.setOrigin(user.getOrigin());
         vo.setMfaEnable(Boolean.TRUE.equals(user.getMfaEnable()));
-        vo.setDefaultOid(user.getDefaultOid());
-        PerOrg org = user.getDefaultOid() == null ? null : orgManage.get(user.getDefaultOid());
+        // 用户可属于多个组织：当前用户取当前组织，否则取主组织
+        Long current = V3UserUtil.getOid();
+        Long oid = user.getId().equals(V3UserUtil.getUid()) && current != null && orgManage.isMember(user.getId(), current)
+                ? current : orgManage.homeOid(user);
+        vo.setDefaultOid(oid);
+        PerOrg org = oid == null ? null : orgManage.get(oid);
         vo.setOrgName(org == null ? null : org.getName());
-        if (user.getDefaultOid() != null) {
-            vo.setRoleIds(new ArrayList<>(roleManage.roleIdsOfUser(user.getId(), user.getDefaultOid()).stream().map(String::valueOf).toList()));
+        if (oid != null) {
+            vo.setRoleIds(new ArrayList<>(roleManage.roleIdsOfUser(user.getId(), oid).stream().map(String::valueOf).toList()));
         }
         vo.setVariables(new ArrayList<>(variableManage.userVariables(user.getId())));
         return vo;
