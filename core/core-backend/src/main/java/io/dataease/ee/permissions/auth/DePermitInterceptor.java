@@ -1,6 +1,7 @@
 package io.dataease.ee.permissions.auth;
 
 import io.dataease.auth.DeApiPath;
+import io.dataease.api.permissions.user.api.UserApi;
 import io.dataease.auth.DePermit;
 import io.dataease.constant.AuthResourceEnum;
 import io.dataease.ee.common.EeConstants;
@@ -76,23 +77,37 @@ public class DePermitInterceptor implements MethodInterceptor {
         AuthResourceEnum rt = apiPath == null ? null : apiPath.rt();
         MethodBasedEvaluationContext context = new MethodBasedEvaluationContext(target, specific, invocation.getArguments(), DISCOVERER);
         String busiFlag = StringUtils.isBlank(permit.busiFlag()) ? null : evaluate(permit.busiFlag(), context);
+        String menuFlag = orgMemberEndpoint(specific, busiFlag) ? busiFlag + "|USER" : busiFlag;
         for (String expression : permit.value()) {
             String result = evaluate(expression, context);
-            if (!check(result, busiFlag, rt)) {
+            if (!check(result, busiFlag, menuFlag, rt)) {
                 deny();
             }
         }
         return invocation.proceed();
     }
 
-    private boolean check(String result, String busiFlag, AuthResourceEnum rt) {
+    /**
+     * 成员维护接口（SDK 中标注为系统用户管理菜单）同样服务于组织管理中心的成员管理页：
+     * 菜单校验 {@code m:read} 时也接受成员管理菜单；针对具体用户的 {@code <uid>:read|manage} 仍按“该用户属于当前组织”校验，
+     * 服务端也只在当前组织内创建 / 修改。系统级的用户列表（/user/pager）不在此列。
+     */
+    private boolean orgMemberEndpoint(Method method, String busiFlag) {
+        return StringUtils.equalsIgnoreCase(busiFlag, "SYSUSER")
+                && ORG_MEMBER_METHODS.contains(method.getName())
+                && UserApi.class.isAssignableFrom(method.getDeclaringClass());
+    }
+
+    private static final Set<String> ORG_MEMBER_METHODS = Set.of("queryById", "create", "edit", "delete", "batchDel", "enable");
+
+    private boolean check(String result, String busiFlag, String menuFlag, AuthResourceEnum rt) {
         if (StringUtils.isBlank(result) || !result.contains(":")) {
             return false;
         }
         String targetText = StringUtils.substringBeforeLast(result, ":").trim();
         String action = StringUtils.substringAfterLast(result, ":").trim().toLowerCase();
         if (StringUtils.equals(targetText, "m")) {
-            return checkMenu(busiFlag, rt);
+            return checkMenu(menuFlag, rt);
         }
         Long resourceId;
         try {

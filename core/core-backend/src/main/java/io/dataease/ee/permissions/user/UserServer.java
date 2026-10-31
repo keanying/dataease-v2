@@ -16,6 +16,8 @@ import io.dataease.ee.common.EeConstants;
 import io.dataease.ee.permissions.auth.EePermissionManage;
 import io.dataease.ee.permissions.dao.entity.*;
 import io.dataease.ee.permissions.dao.repo.PerUserPlatformRepository;
+import io.dataease.ee.permissions.menu.EeMenuManage;
+import io.dataease.ee.permissions.menu.EeMenuRegistry;
 import io.dataease.ee.permissions.org.EeOrgManage;
 import io.dataease.ee.permissions.role.EeRoleManage;
 import io.dataease.exception.DEException;
@@ -63,9 +65,16 @@ public class UserServer implements UserApi {
 
     private final JPAQueryFactory queryFactory;
 
+    private final EeMenuManage menuManage;
+
+    /**
+     * 组织管理中心 → 成员管理 菜单
+     */
+    private static final long ORG_MEMBER_MENU = 8L;
+
     public UserServer(EeUserManage userManage, EeRoleManage roleManage, EeOrgManage orgManage, EePermissionManage permissionManage,
                       EeMfaManage mfaManage, EeTokenManage tokenManage, EeUserImportManage importManage,
-                      PerUserPlatformRepository platformRepository, JPAQueryFactory queryFactory) {
+                      PerUserPlatformRepository platformRepository, JPAQueryFactory queryFactory, EeMenuManage menuManage) {
         this.userManage = userManage;
         this.roleManage = roleManage;
         this.orgManage = orgManage;
@@ -75,6 +84,7 @@ public class UserServer implements UserApi {
         this.importManage = importManage;
         this.platformRepository = platformRepository;
         this.queryFactory = queryFactory;
+        this.menuManage = menuManage;
     }
 
     private Long currentOid() {
@@ -401,6 +411,10 @@ public class UserServer implements UserApi {
 
     @Override
     public UserImportVO batchImport(MultipartFile file) {
+        // SDK 未标注权限：要求能访问组织成员管理或系统用户管理
+        if (!sysAdmin() && !menuManage.canAccess(ORG_MEMBER_MENU) && !menuManage.canAccess(EeMenuRegistry.SYS_USER)) {
+            DEException.throwException(ResultCode.PERMISSION_NO_ACCESS.code(), ResultCode.PERMISSION_NO_ACCESS.message());
+        }
         return importManage.importUsers(file, sysAdmin() && !V3UserUtil.getProxy().isProxy() ? null : currentOid(), currentOid());
     }
 
