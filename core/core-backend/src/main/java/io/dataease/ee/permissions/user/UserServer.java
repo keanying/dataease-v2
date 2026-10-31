@@ -355,7 +355,7 @@ public class UserServer implements UserApi {
 
     @Override
     public UserImportVO batchImport(MultipartFile file) {
-        return importManage.importUsers(file, sysAdmin() && !V3UserUtil.getProxy().isProxy() ? null : currentOid());
+        return importManage.importUsers(file, sysAdmin() && !V3UserUtil.getProxy().isProxy() ? null : currentOid(), currentOid());
     }
 
     @Override

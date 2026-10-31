@@ -54,7 +54,11 @@ public class EeUserImportManage {
     /**
      * @param scopeOid 组织管理员导入时的当前组织；系统管理员导入时为 null（按“组织”列分配）
      */
-    public UserImportVO importUsers(MultipartFile file, Long scopeOid) {
+    /**
+     * @param scopeOid    限定导入到的组织（组织管理员为当前组织；为空表示按模板中的组织列）
+     * @param fallbackOid 模板未填组织时使用的组织（与单个新建用户一致，放入当前组织）
+     */
+    public UserImportVO importUsers(MultipartFile file, Long scopeOid, Long fallbackOid) {
         List<List<String>> rows = read(file);
         if (rows.isEmpty() || !StringUtils.startsWith(rows.get(0).isEmpty() ? null : rows.get(0).get(0), "账号")) {
             DEException.throwException(Translator.get("ee_import_template_error"));
@@ -67,7 +71,7 @@ public class EeUserImportManage {
                 continue;
             }
             try {
-                importRow(row, scopeOid);
+                importRow(row, scopeOid, fallbackOid);
                 success++;
             } catch (Exception e) {
                 List<String> errorRow = new ArrayList<>(pad(row));
@@ -105,7 +109,7 @@ public class EeUserImportManage {
         }
     }
 
-    private void importRow(List<String> row, Long scopeOid) {
+    private void importRow(List<String> row, Long scopeOid, Long fallbackOid) {
         List<String> cells = pad(row);
         String account = StringUtils.trim(cells.get(0));
         String name = StringUtils.trim(cells.get(1));
@@ -123,6 +127,9 @@ public class EeUserImportManage {
                 throw new IllegalArgumentException(Translator.get("ee_org_not_exist"));
             }
             oid = org.getId();
+        }
+        if (oid == null) {
+            oid = fallbackOid;
         }
         List<Long> roleIds = new ArrayList<>();
         if (oid != null) {

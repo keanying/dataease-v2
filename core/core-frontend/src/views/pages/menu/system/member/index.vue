@@ -11,6 +11,8 @@ import { ref, reactive, onMounted, computed, unref } from 'vue'
 import { ElTabs, ElTabPane, ElIcon } from 'element-plus-secondary'
 import { Icon } from '@/components/icon-custom'
 import RoleManage from '@/views/menu/system/member/RoleManage.vue'
+import UserForm from '@/views/menu/system/member/UserForm.vue'
+import UserImport from '@/views/menu/system/member/UserImport/index.vue'
 import { useI18n } from '@/hooks/web/useI18n'
 import GridTable from '@/components/grid-table/src/GridTable.vue'
 import { memberPageApi, defaultPwdApi, resetPwdApi, userUnlockApi } from '@/api/user'
@@ -93,6 +95,10 @@ const search = () => {
 
 const refreshGrid = () => {
   search()
+}
+const userFormRef = ref()
+const addMember = () => {
+  userFormRef.value?.init()
 }
 const refreshRole = () => {
   // role saved in RoleManage, member grid may need refresh
@@ -263,6 +269,10 @@ const cancelRole = (row: any) => {
         <span class="member-title">{{ t('commons.member') }}</span>
       </div>
       <div class="member-header-right">
+        <el-button type="primary" @click="addMember">
+          {{ t('org.add_member') }}
+        </el-button>
+        <user-import @refresh-grid="refreshGrid"></user-import>
         <el-input
           v-model="keyword"
           clearable
@@ -443,6 +453,7 @@ const cancelRole = (row: any) => {
   <div v-else-if="activeName === 'role'" class="role-content">
     <role-manage @refresh="refreshRole" @refresh-grid="refreshGrid"></role-manage>
   </div>
+  <user-form ref="userFormRef" @saved="refreshGrid"></user-form>
 </template>
 
 <style lang="less" scoped>
