@@ -15,6 +15,8 @@ import io.dataease.i18n.Translator;
 import io.dataease.model.KeywordRequest;
 import io.dataease.permission.util.V3UserUtil;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -182,31 +184,76 @@ public class OrgServer implements OrgApi {
         orgService.delete(request.getId(), request.isDelResource());
     }
 
+    /**
+     * 当前用户可切换到的组织：系统管理员为全部组织，其他用户为其所属的组织
+     */
+    private List<PerOrg> switchableOrgs() {
+        QPerOrg q = QPerOrg.perOrg;
+        if (V3UserUtil.isSysAdmin()) {
+            return queryFactory.selectFrom(q).orderBy(q.createTime.asc()).fetch();
+        }
+        List<Long> oids = orgManage.memberOids(V3UserUtil.getUid());
+        if (oids.isEmpty()) {
+            return new ArrayList<>();
+        }
+        return queryFactory.selectFrom(q).where(q.id.in(oids)).orderBy(q.createTime.asc()).fetch();
+    }
+
+    /**
+     * 在 orgs 基础上补齐祖先组织（祖先不在 orgs 中时只用于展示层级，标记为只读）
+     */
+    private Map<Long, PerOrg> withAncestors(Collection<PerOrg> orgs) {
+        Map<Long, PerOrg> all = new LinkedHashMap<>();
+        orgs.forEach(org -> all.put(org.getId(), org));
+        Set<Long> missing = new LinkedHashSet<>();
+        for (PerOrg org : orgs) {
+            for (Long ancestor : orgManage.ancestors(org.getId())) {
+                if (!all.containsKey(ancestor)) {
+                    missing.add(ancestor);
+                }
+            }
+        }
+        if (!missing.isEmpty()) {
+            QPerOrg q = QPerOrg.perOrg;
+            queryFactory.selectFrom(q).where(q.id.in(missing)).fetch().forEach(org -> all.put(org.getId(), org));
+        }
+        List<PerOrg> sorted = new ArrayList<>(all.values());
+        sorted.sort(Comparator.comparing(PerOrg::getCreateTime, Comparator.nullsFirst(Comparator.naturalOrder())));
+        Map<Long, PerOrg> result = new LinkedHashMap<>();
+        sorted.forEach(org -> result.put(org.getId(), org));
+        return result;
+    }
+
+    /**
+     * 组织树：用户所属的组织（系统管理员为全部组织）以及当前身份可管理的组织（日志等页面的组织筛选使用），
+     * 为保持层级补齐的祖先组织标记为只读
+     */
     @Override
     public List<MountedVO> mounted(KeywordRequest request) {
-        List<PerOrg> orgs = visibleOrgs();
+        Map<Long, PerOrg> selectable = new LinkedHashMap<>();
+        switchableOrgs().forEach(org -> selectable.put(org.getId(), org));
+        visibleOrgs().forEach(org -> selectable.putIfAbsent(org.getId(), org));
+        Map<Long, PerOrg> orgs = withAncestors(selectable.values());
         String keyword = request == null || StringUtils.isBlank(request.getKeyword()) ? null : request.getKeyword().trim().toLowerCase();
-        Set<Long> ids = orgs.stream().map(PerOrg::getId).collect(Collectors.toSet());
         Map<Long, MountedVO> map = new LinkedHashMap<>();
-        for (PerOrg org : orgs) {
+        for (PerOrg org : orgs.values()) {
             MountedVO vo = new MountedVO();
             vo.setId(org.getId());
             vo.setName(org.getName());
-            vo.setReadOnly(false);
+            vo.setReadOnly(!selectable.containsKey(org.getId()));
             vo.setChildren(new ArrayList<>());
             map.put(org.getId(), vo);
         }
         List<MountedVO> roots = new ArrayList<>();
-        for (PerOrg org : orgs) {
+        for (PerOrg org : orgs.values()) {
             MountedVO vo = map.get(org.getId());
             if (keyword != null) {
-                if (org.getName().toLowerCase().contains(keyword)) {
-                    vo.setLeaf(true);
+                if (!vo.isReadOnly() && org.getName().toLowerCase().contains(keyword)) {
                     roots.add(vo);
                 }
                 continue;
             }
-            if (org.getPid() != null && ids.contains(org.getPid())) {
+            if (org.getPid() != null && map.containsKey(org.getPid())) {
                 map.get(org.getPid()).getChildren().add(vo);
             } else {
                 roots.add(vo);
@@ -214,6 +261,92 @@ public class OrgServer implements OrgApi {
         }
         map.values().forEach(vo -> vo.setLeaf(vo.getChildren().isEmpty()));
         return roots;
+    }
+
+    /**
+     * 页头组织切换器的懒加载组织树。
+     * <ul>
+     *     <li>无 pid、无 keyword：根节点；有 pid：该组织的下级节点；</li>
+     *     <li>有 keyword：名称匹配的组织及其祖先组成的完整树，expandKeyList 为需要展开的节点；</li>
+     *     <li>节点只包含用户可切换的组织（所属组织，系统管理员为全部组织）及其祖先，祖先不可切换时 readOnly=true；</li>
+     *     <li>name 为当前组织名称，switchable 为可切换的组织数量（页头据此决定是否显示切换器）。</li>
+     * </ul>
+     */
+    @PostMapping("/lazyMounted")
+    public Map<String, Object> lazyMounted(@RequestBody(required = false) OrgLazyRequest request) {
+        List<PerOrg> switchable = switchableOrgs();
+        Set<Long> selectable = switchable.stream().map(PerOrg::getId).collect(Collectors.toSet());
+        Map<Long, PerOrg> orgs = withAncestors(switchable);
+        Map<Long, List<PerOrg>> children = new HashMap<>();
+        List<PerOrg> roots = new ArrayList<>();
+        for (PerOrg org : orgs.values()) {
+            if (org.getPid() != null && orgs.containsKey(org.getPid())) {
+                children.computeIfAbsent(org.getPid(), key -> new ArrayList<>()).add(org);
+            } else {
+                roots.add(org);
+            }
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        PerOrg current = orgManage.get(V3UserUtil.getOid());
+        result.put("name", current == null ? null : current.getName());
+        result.put("switchable", selectable.size());
+        List<String> expandKeys = new ArrayList<>();
+        String keyword = request == null || StringUtils.isBlank(request.getKeyword()) ? null : request.getKeyword().trim().toLowerCase();
+        List<Map<String, Object>> nodes = new ArrayList<>();
+        if (keyword != null) {
+            Set<Long> keep = new HashSet<>();
+            for (PerOrg org : orgs.values()) {
+                if (org.getName().toLowerCase().contains(keyword)) {
+                    PerOrg cursor = org;
+                    while (cursor != null && keep.add(cursor.getId())) {
+                        cursor = cursor.getPid() == null ? null : orgs.get(cursor.getPid());
+                    }
+                }
+            }
+            for (PerOrg root : roots) {
+                Map<String, Object> node = switcherNode(root, children, selectable, keep, expandKeys);
+                if (node != null) {
+                    nodes.add(node);
+                }
+            }
+        } else {
+            Long pid = request == null ? null : request.getPid();
+            List<PerOrg> level = pid == null ? roots : children.getOrDefault(pid, new ArrayList<>());
+            for (PerOrg org : level) {
+                nodes.add(switcherNode(org, children, selectable, null, null));
+            }
+        }
+        result.put("nodes", nodes);
+        result.put("expandKeyList", expandKeys);
+        return result;
+    }
+
+    private Map<String, Object> switcherNode(PerOrg org, Map<Long, List<PerOrg>> children, Set<Long> selectable,
+                                             Set<Long> keep, List<String> expandKeys) {
+        if (keep != null && !keep.contains(org.getId())) {
+            return null;
+        }
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("id", String.valueOf(org.getId()));
+        node.put("pid", org.getPid() == null ? null : String.valueOf(org.getPid()));
+        node.put("name", org.getName());
+        node.put("readOnly", !selectable.contains(org.getId()));
+        List<PerOrg> kids = children.getOrDefault(org.getId(), new ArrayList<>());
+        node.put("leaf", kids.isEmpty());
+        if (keep != null) {
+            List<Map<String, Object>> childNodes = new ArrayList<>();
+            for (PerOrg kid : kids) {
+                Map<String, Object> child = switcherNode(kid, children, selectable, keep, expandKeys);
+                if (child != null) {
+                    childNodes.add(child);
+                }
+            }
+            if (!childNodes.isEmpty()) {
+                expandKeys.add(String.valueOf(org.getId()));
+                node.put("children", childNodes);
+            }
+        }
+        return node;
     }
 
     @Override

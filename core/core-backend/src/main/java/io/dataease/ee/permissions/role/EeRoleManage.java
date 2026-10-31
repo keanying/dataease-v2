@@ -217,13 +217,16 @@ public class EeRoleManage {
     }
 
     /**
-     * 替换用户在组织内的角色（角色必须属于该组织）
+     * 替换用户在组织内的角色（角色必须属于该组织），不影响用户在其他组织的角色
      */
     @Transactional
     public void replaceRoles(Long uid, Long oid, Collection<Long> roleIds) {
+        if (oid == null) {
+            return;
+        }
         QPerUserRole ur = QPerUserRole.perUserRole;
-        queryFactory.delete(ur).where(ur.uid.eq(uid)).execute();
-        if (oid == null || CollectionUtils.isEmpty(roleIds)) {
+        queryFactory.delete(ur).where(ur.uid.eq(uid), ur.oid.eq(oid)).execute();
+        if (CollectionUtils.isEmpty(roleIds)) {
             return;
         }
         for (Long rid : new LinkedHashSet<>(roleIds)) {
@@ -254,6 +257,15 @@ public class EeRoleManage {
     public void unmount(Long uid, Long rid) {
         QPerUserRole ur = QPerUserRole.perUserRole;
         queryFactory.delete(ur).where(ur.uid.eq(uid), ur.rid.eq(rid)).execute();
+    }
+
+    /**
+     * 删除用户在某组织内的全部角色
+     */
+    @Transactional
+    public void removeUserInOrg(Long uid, Long oid) {
+        QPerUserRole ur = QPerUserRole.perUserRole;
+        queryFactory.delete(ur).where(ur.uid.eq(uid), ur.oid.eq(oid)).execute();
     }
 
     @Transactional

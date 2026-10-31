@@ -211,10 +211,12 @@ public class ExportCenterDownLoadManage {
         }
         exportTarget.createParentDirectory();
         Long uid = V3UserUtil.getUid();
+        // 用户可属于多个组织：异步任务沿用发起请求时的当前组织
+        Long curOid = V3UserUtil.getOid();
         Long proxyOid = V3UserUtil.getProxy().getProxyOid();
         Future future = scheduledThreadPoolExecutor.submit(() -> {
             try {
-                V3UserUtil.setUid(uid);
+                V3UserUtil.setContext(uid, curOid);
                 if (ObjectUtils.isNotEmpty(proxyOid) && proxyOid > 0) {
                     V3UserUtil.setProxy(proxyOid);
                 }
@@ -309,11 +311,13 @@ public class ExportCenterDownLoadManage {
     public void startDatasetTask(CoreExportTask exportTask, ExportTaskFileTarget exportTarget, Long exportFrom, DataSetExportRequest request) {
         exportTarget.createParentDirectory();
         Long uid = V3UserUtil.getUid();
+        // 用户可属于多个组织：异步任务沿用发起请求时的当前组织
+        Long curOid = V3UserUtil.getOid();
         Long proxyOid = V3UserUtil.getProxy().getProxyOid();
         String clientIp = IPUtils.get();
         Future future = scheduledThreadPoolExecutor.submit(() -> {
             try {
-                V3UserUtil.setUid(uid);
+                V3UserUtil.setContext(uid, curOid);
                 if (ObjectUtils.isNotEmpty(proxyOid) && proxyOid > 0) {
                     V3UserUtil.setProxy(proxyOid);
                 }
@@ -551,11 +555,13 @@ public class ExportCenterDownLoadManage {
     public void startViewTask(CoreExportTask exportTask, ExportTaskFileTarget exportTarget, ChartExcelRequest request) {
         exportTarget.createParentDirectory();
         Long uid = V3UserUtil.getUid();
+        // 用户可属于多个组织：异步任务沿用发起请求时的当前组织
+        Long curOid = V3UserUtil.getOid();
         Long proxyOid = V3UserUtil.getProxy().getProxyOid();
         String clientIp = IPUtils.get();
         Future future = scheduledThreadPoolExecutor.submit(() -> {
             try {
-                V3UserUtil.setUid(uid);
+                V3UserUtil.setContext(uid, curOid);
                 if (ObjectUtils.isNotEmpty(proxyOid) && proxyOid > 0) {
                     V3UserUtil.setProxy(proxyOid);
                 }

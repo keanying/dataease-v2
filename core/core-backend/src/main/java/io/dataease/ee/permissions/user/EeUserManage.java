@@ -130,6 +130,7 @@ public class EeUserManage {
         user.setMfaBound(false);
         perUserRepository.save(user);
         if (oid != null) {
+            orgManage.addMember(user.getId(), oid);
             List<Long> roleIds = creator.getRoleIds();
             if (CollectionUtils.isEmpty(roleIds)) {
                 // 未选择角色时授予组织内置的普通用户角色，避免用户进入组织后没有任何权限
@@ -146,6 +147,17 @@ public class EeUserManage {
 
     @Transactional
     public void edit(UserEditor editor) {
+        edit(editor, false);
+    }
+
+    /**
+     * 修改用户
+     *
+     * @param keepOrg true 时为组织内编辑：editor.defaultOid 为当前组织，只替换该组织内的角色；
+     *                false 时为系统用户编辑：editor.defaultOid 为主组织
+     */
+    @Transactional
+    public void edit(UserEditor editor, boolean keepOrg) {
         PerUser user = require(editor.getId());
         QPerUser q = QPerUser.perUser;
         checkEmail(editor.getEmail(), user.getId());
@@ -165,18 +177,32 @@ public class EeUserManage {
             update.set(q.enable, editor.getEnable());
         }
         Long oid = editor.getDefaultOid();
-        if (!EeConstants.ADMIN_UID.equals(user.getId())) {
-            if (oid != null && !orgManage.exists(oid)) {
-                DEException.throwException(Translator.get("ee_org_not_exist"));
-            }
-            setNullable(update, q.defaultOid, oid);
+        if (!EeConstants.ADMIN_UID.equals(user.getId()) && oid != null && !orgManage.exists(oid)) {
+            DEException.throwException(Translator.get("ee_org_not_exist"));
         }
         update.execute();
         if (!EeConstants.ADMIN_UID.equals(user.getId())) {
-            if (!Objects.equals(oid, user.getDefaultOid()) && user.getDefaultOid() != null) {
-                grantManage.deleteBySubjectInOrg(EeConstants.SUBJECT_USER, user.getId(), user.getDefaultOid());
+            if (keepOrg) {
+                // 组织内编辑：只替换该组织内的角色，不改变组织关系
+                if (oid != null && orgManage.isMember(user.getId(), oid)) {
+                    roleManage.replaceRoles(user.getId(), oid, editor.getRoleIds());
+                }
+            } else {
+                // 系统用户编辑：表单中的组织为主组织，更换主组织时离开原主组织（其他组织的成员关系不变）
+                Long home = orgManage.homeOid(user);
+                if (!Objects.equals(oid, home)) {
+                    if (home != null) {
+                        leaveOrg(user.getId(), home);
+                    }
+                    if (oid != null) {
+                        orgManage.addMember(user.getId(), oid);
+                        queryFactory.update(q).set(q.defaultOid, oid).where(q.id.eq(user.getId())).execute();
+                    }
+                }
+                if (oid != null) {
+                    roleManage.replaceRoles(user.getId(), oid, editor.getRoleIds());
+                }
             }
-            roleManage.replaceRoles(user.getId(), oid, editor.getRoleIds());
         }
         if (editor.getVariables() != null) {
             variables().saveUserVariables(user.getId(), editor.getVariables());
@@ -215,6 +241,7 @@ public class EeUserManage {
             DEException.throwException(Translator.get("ee_cannot_operate_self"));
         }
         roleManage.removeUser(uid);
+        orgManage.removeUser(uid);
         grantManage.deleteBySubject(EeConstants.SUBJECT_USER, uid);
         QPerUserPlatform platform = QPerUserPlatform.perUserPlatform;
         queryFactory.delete(platform).where(platform.uid.eq(uid)).execute();
@@ -274,19 +301,97 @@ public class EeUserManage {
     }
 
     /**
-     * 把用户移入组织（或移出组织 oid=null），并替换角色
+     * 加入组织（已是成员时只更新角色），不影响用户在其他组织的成员关系。
+     * 用户没有有效的主组织时以该组织为主组织。
+     *
+     * @param roleIds 该组织内的角色；为空且用户在该组织内没有角色时授予内置普通用户角色
      */
     @Transactional
-    public void moveToOrg(Long uid, Long oid, Collection<Long> roleIds) {
-        PerUser user = require(uid);
-        if (user.getDefaultOid() != null && !Objects.equals(user.getDefaultOid(), oid)) {
-            grantManage.deleteBySubjectInOrg(EeConstants.SUBJECT_USER, uid, user.getDefaultOid());
+    public void joinOrg(Long uid, Long oid, Collection<Long> roleIds) {
+        require(uid);
+        if (oid == null || !orgManage.exists(oid)) {
+            DEException.throwException(Translator.get("ee_org_not_exist"));
         }
+        orgManage.addMember(uid, oid);
+        QPerUser qu = QPerUser.perUser;
+        Long home = queryFactory.select(qu.defaultOid).from(qu).where(qu.id.eq(uid)).fetchFirst();
+        if (home == null || !orgManage.isMember(uid, home)) {
+            QPerUser q = QPerUser.perUser;
+            queryFactory.update(q).set(q.defaultOid, oid).set(q.updateTime, System.currentTimeMillis()).where(q.id.eq(uid)).execute();
+        }
+        if (CollectionUtils.isNotEmpty(roleIds)) {
+            roleManage.replaceRoles(uid, oid, roleIds);
+        } else if (roleManage.roleIdsOfUser(uid, oid).isEmpty()) {
+            PerRole staff = roleManage.builtinRole(oid, EeConstants.ROLE_TYPE_STAFF);
+            if (staff != null) {
+                roleManage.replaceRoles(uid, oid, List.of(staff.getId()));
+            }
+        }
+        userProvider.evict(uid);
+    }
+
+    /**
+     * 离开组织：删除成员关系、该组织内的角色与对该用户的授权；
+     * 主组织 / 最近切换的组织为该组织时改为其他所属组织（没有时置空）。
+     */
+    @Transactional
+    public void leaveOrg(Long uid, Long oid) {
+        if (uid == null || oid == null) {
+            return;
+        }
+        orgManage.removeMember(uid, oid);
+        roleManage.removeUserInOrg(uid, oid);
+        grantManage.deleteBySubjectInOrg(EeConstants.SUBJECT_USER, uid, oid);
+        reassignOrgs(uid, oid);
+        userProvider.evict(uid);
+    }
+
+    /**
+     * 组织删除后：删除全部成员关系，并为受影响的用户重新确定主组织 / 最近切换的组织
+     */
+    @Transactional
+    public void onOrgDeleted(Long oid) {
+        List<Long> members = orgManage.memberIds(oid);
+        orgManage.removeOrg(oid);
         QPerUser q = QPerUser.perUser;
-        var update = queryFactory.update(q).where(q.id.eq(uid)).set(q.updateTime, System.currentTimeMillis());
-        setNullable(update, q.defaultOid, oid);
-        update.execute();
-        roleManage.replaceRoles(uid, oid, roleIds);
+        Set<Long> affected = new LinkedHashSet<>(members);
+        affected.addAll(queryFactory.select(q.id).from(q).where(q.defaultOid.eq(oid).or(q.lastOid.eq(oid))).fetch());
+        for (Long uid : affected) {
+            reassignOrgs(uid, oid);
+            userProvider.evict(uid);
+        }
+    }
+
+    /**
+     * 用户不再属于 removedOid 后修正 default_oid / last_oid
+     */
+    private void reassignOrgs(Long uid, Long removedOid) {
+        QPerUser q = QPerUser.perUser;
+        // 读取列值而不是实体，避免同一事务内批量更新后持久化上下文中的实体过期
+        com.querydsl.core.Tuple t = queryFactory.select(q.defaultOid, q.lastOid).from(q).where(q.id.eq(uid)).fetchFirst();
+        if (t == null) {
+            return;
+        }
+        Long defaultOid = t.get(q.defaultOid);
+        Long lastOid = t.get(q.lastOid);
+        List<Long> remain = orgManage.memberOids(uid);
+        if (defaultOid != null && (Objects.equals(defaultOid, removedOid) || !remain.contains(defaultOid))) {
+            var update = queryFactory.update(q).where(q.id.eq(uid)).set(q.updateTime, System.currentTimeMillis());
+            setNullable(update, q.defaultOid, remain.isEmpty() ? null : remain.getFirst());
+            update.execute();
+        }
+        if (Objects.equals(lastOid, removedOid)) {
+            queryFactory.update(q).setNull(q.lastOid).where(q.id.eq(uid)).execute();
+        }
+    }
+
+    /**
+     * 记录最近切换的组织
+     */
+    @Transactional
+    public void switchOrg(Long uid, Long oid) {
+        QPerUser q = QPerUser.perUser;
+        queryFactory.update(q).set(q.lastOid, oid).where(q.id.eq(uid)).execute();
         userProvider.evict(uid);
     }
 
@@ -309,9 +414,9 @@ public class EeUserManage {
             }
             if (scopeOid == null && request.getOid() != null) {
                 if (request.getOid() == -1L) {
-                    where.and(q.defaultOid.isNull());
+                    where.and(orgManage.memberOfNone(q.id));
                 } else {
-                    where.and(q.defaultOid.eq(request.getOid()));
+                    where.and(orgManage.memberOf(q.id, request.getOid()));
                 }
             }
             if (CollectionUtils.isNotEmpty(request.getRoleIdList())) {
@@ -320,7 +425,7 @@ public class EeUserManage {
             }
         }
         if (scopeOid != null) {
-            where.and(q.defaultOid.eq(scopeOid));
+            where.and(orgManage.memberOf(q.id, scopeOid));
         }
         return where;
     }

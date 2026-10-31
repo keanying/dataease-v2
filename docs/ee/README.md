@@ -35,7 +35,11 @@
 ## 2. 关键约定
 
 ### 2.1 组织与身份
-* 单组织模型：每个用户至多属于一个组织（`per_user.default_oid`）。角色属于组织，用户通过 `per_user_role` 拥有组织内角色。
+* 多组织模型：用户可以属于多个组织，成员关系存放在 `per_user_org(uid, oid)`（唯一约束）。`per_user.default_oid` 为主组织，`per_user.last_oid` 为最近一次切换到的组织，二者都应是用户所属的组织；离开组织（移出、组织删除）时自动改为其他所属组织或置空。版本组 3 的 `3.1.1`（`EeMultiOrgInit`）为已有数据补齐成员关系（每个用户的 `default_oid` 及 `per_user_role` 中出现的组织）。
+* 角色属于组织，用户通过 `per_user_role(uid, rid, oid)` 拥有组织内角色，只能拥有其所属组织的角色。成员判断统一使用 `EeOrgManage.isMember / memberIds / memberOf(...)`，不要再用 `default_oid` 判断成员关系。
+* 当前组织：登录 token 的 `oid` 声明。登录时取 `last_oid`（仍是成员时）> `default_oid` > 最早加入的组织；`POST /user/switch/{oid}` 切换组织（须为成员，系统管理员可切换到任意组织）并返回新 token；用户不再属于 token 中的组织时 token 失效（`permission has been changed`）。页头组织切换器（`views/component/switcher`，数据来自 `POST /org/lazyMounted`）在可切换的组织数不少于 2 时显示。
+* 组织管理“添加成员”只增加成员关系与该组织内的角色，不移出原组织；“移出成员”只删除该组织的成员关系、组织内角色与该组织内对用户的授权。组织管理员在成员页删除同时属于其他组织的用户时，只把用户移出当前组织。
+* 用户的直接授权（`per_auth` 主体为用户）只在授权所属组织（`per_auth.oid`）内生效；受唯一约束限制，同一用户对同一菜单 / 根目录只有一条授权，以最近一次授权所在组织为准。
 * 系统管理员 uid=1；默认组织 oid=1（不可删除）。
 * 系统管理员“进入组织”：前端请求头 `X-DE-ADMIN-PROXY` 携带 RSA 加密的组织 ID，此时 `V3UserUtil.getOid()` 为被代理组织。
 * 当前身份统一通过 `V3UserUtil` 获取：`getUid()`、`getOid()`、`getUser()`、`isSysAdmin()`、`getProxy()`。异步任务需显式 `setContext/setUid/setProxy` 并在 `finally` 中 `clear()`。

@@ -114,7 +114,7 @@ public class RowPermissionsServer implements RowPermissionsApi {
         Long oid = support.datasetOrg(request.getDatasetId());
         return support.roleMembers(request.getAuthTargetId()).stream()
                 .filter(user -> !EeConstants.ADMIN_UID.equals(user.getId()))
-                .filter(user -> oid == null || oid.equals(user.getDefaultOid()))
+                .filter(user -> oid == null || support.isOrgMember(user.getId(), oid))
                 .toList();
     }
 

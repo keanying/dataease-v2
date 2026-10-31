@@ -3,6 +3,7 @@ package io.dataease.ee.datafilling.manage;
 import com.querydsl.jpa.impl.JPAQueryFactory;
 import io.dataease.ee.permissions.dao.entity.PerUser;
 import io.dataease.ee.permissions.dao.entity.QPerUser;
+import io.dataease.ee.permissions.dao.entity.QPerUserOrg;
 import io.dataease.ee.permissions.dao.entity.QPerUserRole;
 import org.apache.commons.collections4.CollectionUtils;
 import org.springframework.stereotype.Component;
@@ -44,13 +45,12 @@ public class DfUsers {
     }
 
     /**
-     * 组织内的启用用户（含以该组织为默认组织的用户）
+     * 组织内的启用用户（per_user_org 成员关系）
      */
     public List<PerUser> orgUsers(Long oid) {
         QPerUser q = QPerUser.perUser;
-        QPerUserRole ur = QPerUserRole.perUserRole;
-        Set<Long> ids = new HashSet<>(queryFactory.select(ur.uid).from(ur).where(ur.oid.eq(oid)).fetch());
-        ids.addAll(queryFactory.select(q.id).from(q).where(q.defaultOid.eq(oid)).fetch());
+        QPerUserOrg m = QPerUserOrg.perUserOrg;
+        Set<Long> ids = new HashSet<>(queryFactory.select(m.uid).from(m).where(m.oid.eq(oid)).fetch());
         if (ids.isEmpty()) {
             return new ArrayList<>();
         }

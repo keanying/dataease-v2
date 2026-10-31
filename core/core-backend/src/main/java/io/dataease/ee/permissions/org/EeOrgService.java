@@ -8,7 +8,6 @@ import io.dataease.ee.permissions.auth.EeGrantManage;
 import io.dataease.ee.permissions.dao.entity.PerOrg;
 import io.dataease.ee.permissions.dao.entity.PerRole;
 import io.dataease.ee.permissions.dao.entity.QPerOrg;
-import io.dataease.ee.permissions.dao.entity.QPerUser;
 import io.dataease.ee.permissions.dao.repo.PerOrgRepository;
 import io.dataease.ee.permissions.resource.EeBusiResourceManage;
 import io.dataease.ee.permissions.resource.EeResourceDeleter;
@@ -93,7 +92,8 @@ public class EeOrgService {
                 if (EeConstants.ADMIN_UID.equals(uid)) {
                     continue;
                 }
-                userManage.moveToOrg(uid, org.getId(), List.of(adminRole.getId()));
+                // 加入新组织并成为组织管理员，原有组织的成员关系不变
+                userManage.joinOrg(uid, org.getId(), List.of(adminRole.getId()));
             }
         }
         return org.getId();
@@ -124,11 +124,8 @@ public class EeOrgService {
         if (queryFactory.selectOne().from(q).where(q.pid.eq(id)).fetchFirst() != null) {
             DEException.throwException(Translator.get("ee_org_has_children"));
         }
-        // 成员移出组织
-        List<Long> members = orgManage.memberIds(id);
-        QPerUser u = QPerUser.perUser;
-        queryFactory.update(u).setNull(u.defaultOid).where(u.defaultOid.eq(id)).execute();
-        members.forEach(userProvider::evict);
+        // 删除成员关系，受影响用户的主组织 / 最近切换的组织改为其他所属组织
+        userManage.onOrgDeleted(id);
         roleManage.deleteByOrg(id);
         grantManage.deleteByOrg(id);
         handleResources(id, delResource);
