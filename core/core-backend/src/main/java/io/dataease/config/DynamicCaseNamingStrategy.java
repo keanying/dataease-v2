@@ -8,12 +8,29 @@ import org.hibernate.dialect.OracleDialect;
 import org.hibernate.engine.jdbc.env.spi.JdbcEnvironment;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.Set;
 import java.util.zip.CRC32;
 
 
 public class DynamicCaseNamingStrategy extends CamelCaseToUnderscoresNamingStrategy {
     private final ThreadLocal<String> currentTableName = new ThreadLocal<>();
+
+    /**
+     * MySQL 以 lower_case_table_names=1 运行（Windows 默认）时，表名一律以小写存储。
+     * 由于 temp.use_jdbc_metadata_defaults=false，Hibernate 按物理名原样匹配已有表，
+     * 此时 QRTZ_* 必须输出小写，否则每次启动都会被误判为不存在而重复建表、加外键。
+     * 由 {@link QuartzTableCaseCustomizer} 探测后设置。
+     */
+    private final boolean lowerCaseQuartzTables;
+
+    public DynamicCaseNamingStrategy() {
+        this(false);
+    }
+
+    public DynamicCaseNamingStrategy(boolean lowerCaseQuartzTables) {
+        this.lowerCaseQuartzTables = lowerCaseQuartzTables;
+    }
     /**
      * Oracle数据库的最大标识符长度
      */
@@ -74,7 +91,8 @@ public class DynamicCaseNamingStrategy extends CamelCaseToUnderscoresNamingStrat
         currentTableName.set(name.getText());
         Identifier identifier = super.toPhysicalTableName(name, context);
         if (name.getText().startsWith("QRTZ_")) {
-            identifier = Identifier.toIdentifier(name.getText().toUpperCase());
+            identifier = Identifier.toIdentifier(lowerCaseQuartzTables
+                    ? name.getText().toLowerCase(Locale.ROOT) : name.getText().toUpperCase(Locale.ROOT));
         }
         // Oracle及兼容数据库(达梦等)特殊处理
         Dialect dialect = context.getDialect();
